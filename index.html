@@ -46,6 +46,7 @@
   .toggle-btn.active-blue { border-color: #3498db; background: rgba(52,152,219,0.13); color: #3498db; }
   .toggle-btn.active-purple { border-color: #9b59b6; background: rgba(155,89,182,0.13); color: #9b59b6; }
   .toggle-btn.active-green { border-color: #2ecc71; background: rgba(46,204,113,0.13); color: #2ecc71; }
+  .toggle-btn.active-red { border-color: #e74c3c; background: rgba(231,76,60,0.13); color: #e74c3c; }
 
   .lock-btn { width: 100%; height: 46px; border-radius: 8px; background: linear-gradient(135deg, #f9c22e, #e6a800); color: #0a1628; font-size: 14px; font-weight: 800; border: none; cursor: pointer; letter-spacing: 0.3px; margin-top: 4px; font-family: inherit; }
   .lock-btn:disabled { opacity: 0.35; }
@@ -202,7 +203,7 @@ const GROUP_MATCHES = [
   { id:72, date:"Jun 27", group:"J", teamA:"Jordan",         teamB:"Argentina",      venue:"Dallas" },
 ];
 
-const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5 };
+const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5, redCard: 5 };
 const DEFAULT_PAYOUT = { ptsPerUnit: 100, dollarsPerUnit: 20 };
 let SCORING = { ...DEFAULT_SCORING };
 let PAYOUT = { ...DEFAULT_PAYOUT };
@@ -291,7 +292,7 @@ function startFirestoreSync() {
     if (doc.exists) {
       try {
         const data = JSON.parse(doc.data().json || "{}");
-        SCORING = { ...DEFAULT_SCORING, scoreA: data.scoreA ?? 15, scoreB: data.scoreB ?? 15, winner: data.winner ?? 10, draw: data.draw ?? 5, penalty: data.penalty ?? 5 };
+        SCORING = { ...DEFAULT_SCORING, scoreA: data.scoreA ?? 15, scoreB: data.scoreB ?? 15, winner: data.winner ?? 10, draw: data.draw ?? 5, penalty: data.penalty ?? 5, redCard: data.redCard ?? 5 };
         PAYOUT = { ptsPerUnit: data.ptsPerUnit ?? 100, dollarsPerUnit: data.dollarsPerUnit ?? 20 };
         saveLocalCache();
         render();
@@ -330,6 +331,10 @@ function calcPoints(pred, result) {
     if (predWinner === result.winner) pts += SCORING.winner;
   }
   if (pred.penalty === result.penalty) pts += SCORING.penalty;
+  // Red card: only scored when both the prediction and result include it (added mid-tournament)
+  if (pred.redCard !== undefined && pred.redCard !== "" && result.redCard !== undefined && result.redCard !== "") {
+    if (pred.redCard === result.redCard) pts += (SCORING.redCard || 0);
+  }
   return pts;
 }
 
@@ -372,7 +377,7 @@ window.resetSettings = async function() {
 };
 
 window.updateDraft = function(id, field, value) {
-  drafts[id] = drafts[id] || { scoreA:"", scoreB:"", draw:"", penalty:"" };
+  drafts[id] = drafts[id] || { scoreA:"", scoreB:"", draw:"", penalty:"", redCard:"" };
   drafts[id][field] = value;
   render();
 };
@@ -400,7 +405,7 @@ window.submitResult = async function(id) {
   if (!confirm("Confirm final result? This scores the match.")) return;
   const draw = String(d.scoreA) === String(d.scoreB) ? "Y" : "N";
   const winner = draw === "Y" ? "" : (Number(d.scoreA) > Number(d.scoreB) ? "A" : "B");
-  state.results[id] = { scoreA: d.scoreA, scoreB: d.scoreB, penalty: d.penalty || "N", draw, winner, entered: true, enteredBy: state.user };
+  state.results[id] = { scoreA: d.scoreA, scoreB: d.scoreB, penalty: d.penalty || "N", redCard: d.redCard || "", draw, winner, entered: true, enteredBy: state.user };
   saveLocalCache();
   delete resultDrafts[id]; delete resultOpen[id];
   render();
@@ -531,8 +536,8 @@ function renderCard(m) {
   const result = state.results[m.id] || {};
   const isLocked = !!myPred.locked;
   const hasResult = !!result.entered;
-  const d = drafts[m.id] || { scoreA:"", scoreB:"", draw:"", penalty:"" };
-  const rd = resultDrafts[m.id] || { scoreA:"", scoreB:"", penalty:"" };
+  const d = drafts[m.id] || { scoreA:"", scoreB:"", draw:"", penalty:"", redCard:"" };
+  const rd = resultDrafts[m.id] || { scoreA:"", scoreB:"", penalty:"", redCard:"" };
 
   const luisPts = calcPoints(pred.luis, result);
   const bibiPts = calcPoints(pred.bibi, result);
@@ -558,6 +563,10 @@ function renderCard(m) {
           <button class="toggle-btn ${d.penalty==='Y'?'active-purple':''}" onclick="updateDraft(${m.id},'penalty','Y')">✓ Penalty</button>
           <button class="toggle-btn ${d.penalty==='N'?'active-purple':''}" onclick="updateDraft(${m.id},'penalty','N')">✗ Penalty</button>
         </div>
+        <div class="toggle-row">
+          <button class="toggle-btn ${d.redCard==='Y'?'active-red':''}" onclick="updateDraft(${m.id},'redCard','Y')">🟥 Red Card</button>
+          <button class="toggle-btn ${d.redCard==='N'?'active-red':''}" onclick="updateDraft(${m.id},'redCard','N')">✗ No Red</button>
+        </div>
         <button class="lock-btn" onclick="lockPrediction(${m.id})" ${d.scoreA===""||d.scoreB===""?"disabled":""}>🔒 Lock Prediction</button>
       </div>
     `;
@@ -568,7 +577,7 @@ function renderCard(m) {
         <span class="pred-score">${esc(myPred.scoreA)}</span>
         <span style="color:rgba(255,255,255,0.3)">–</span>
         <span class="pred-score">${esc(myPred.scoreB)}</span>
-        <span class="pred-extras">${myPred.draw==='Y'?'· Draw ✓':'· No Draw'} &nbsp; ${myPred.penalty==='Y'?'· Pen ✓':'· No Pen'}</span>
+        <span class="pred-extras">${myPred.draw==='Y'?'· Draw ✓':'· No Draw'} &nbsp; ${myPred.penalty==='Y'?'· Pen ✓':'· No Pen'}${myPred.redCard!==undefined&&myPred.redCard!==''?(myPred.redCard==='Y'?' &nbsp;· 🟥 Red':' &nbsp;· No Red'):''}</span>
       </div>
       ${hasResult && myPts !== null ? `<div style="text-align:center;padding-bottom:10px"><span class="pts-badge ${ptsClass(myPts)}">${myPts} pts</span></div>` : ""}
     `;
@@ -578,7 +587,7 @@ function renderCard(m) {
   let otherHtml = "";
   if (otherPred.locked) {
     if (isLocked || hasResult) {
-      otherHtml = `<div class="other-pred">${otherName}: ${esc(otherPred.scoreA)}–${esc(otherPred.scoreB)} ${otherPred.draw==='Y'?'· Draw':''} ${otherPred.penalty==='Y'?'· Pen':''}</div>`;
+      otherHtml = `<div class="other-pred">${otherName}: ${esc(otherPred.scoreA)}–${esc(otherPred.scoreB)} ${otherPred.draw==='Y'?'· Draw':''} ${otherPred.penalty==='Y'?'· Pen':''} ${otherPred.redCard==='Y'?'· 🟥':''}</div>`;
     } else {
       otherHtml = `<div class="other-pred">${otherName} has locked 🔒 (hidden until you lock)</div>`;
     }
@@ -605,6 +614,10 @@ function renderCard(m) {
               <button class="toggle-btn ${rd.penalty==='Y'?'active-green':''}" onclick="updateResultDraft(${m.id},'penalty','Y')">✓ Penalty in match</button>
               <button class="toggle-btn ${rd.penalty==='N'?'active-green':''}" onclick="updateResultDraft(${m.id},'penalty','N')">✗ No penalty</button>
             </div>
+            <div class="toggle-row">
+              <button class="toggle-btn ${rd.redCard==='Y'?'active-red':''}" onclick="updateResultDraft(${m.id},'redCard','Y')">🟥 Red card shown</button>
+              <button class="toggle-btn ${rd.redCard==='N'?'active-red':''}" onclick="updateResultDraft(${m.id},'redCard','N')">✗ No red card</button>
+            </div>
             <button class="lock-btn green" onclick="submitResult(${m.id})" ${rd.scoreA===""||rd.scoreB===""?"disabled":""}>✓ Confirm Result</button>
           </div>
         ` : ""}
@@ -617,7 +630,7 @@ function renderCard(m) {
           <div>
             <div class="result-label">Final Score</div>
             <div class="final-score">${esc(m.teamA)} ${esc(result.scoreA)} – ${esc(result.scoreB)} ${esc(m.teamB)}
-              <span class="final-extras">${result.draw==='Y'?'Draw':''} ${result.penalty==='Y'?'· Pen':''}</span>
+              <span class="final-extras">${result.draw==='Y'?'Draw':''} ${result.penalty==='Y'?'· Pen':''} ${result.redCard==='Y'?'· 🟥':''}</span>
             </div>
           </div>
           <div style="display:flex;gap:6px">
@@ -721,6 +734,12 @@ function computeStats() {
       // Penalty
       if (p.penalty === result.penalty) { s.cat.penalty += SCORING.penalty; s.hits.penalty++; matchPts += SCORING.penalty; }
 
+      // Red card (only when both sides have the field)
+      if (p.redCard !== undefined && p.redCard !== "" && result.redCard !== undefined && result.redCard !== "") {
+        s.redCardEligible++;
+        if (p.redCard === result.redCard) { s.cat.redCard += (SCORING.redCard || 0); s.hits.redCard++; matchPts += (SCORING.redCard || 0); }
+      }
+
       s.total += matchPts;
       if (matchPts > s.bestMatch.pts) s.bestMatch = { pts: matchPts, match: m };
       if (matchPts === 0) s.blanks++;
@@ -746,8 +765,9 @@ function emptyPlayerStats() {
   return {
     predicted: 0, total: 0, perfectScores: 0, blanks: 0,
     drawGames: 0, decisiveGames: 0,
-    cat: { exactA: 0, exactB: 0, winner: 0, draw: 0, penalty: 0 },
-    hits: { exactA: 0, exactB: 0, winner: 0, draw: 0, penalty: 0 },
+    cat: { exactA: 0, exactB: 0, winner: 0, draw: 0, penalty: 0, redCard: 0 },
+    hits: { exactA: 0, exactB: 0, winner: 0, draw: 0, penalty: 0, redCard: 0 },
+    redCardEligible: 0,
     bestMatch: { pts: -1, match: null },
   };
 }
@@ -796,7 +816,8 @@ function renderStats() {
 
   const catMax = Math.max(
     L.cat.exactA + L.cat.exactB, B.cat.exactA + B.cat.exactB,
-    L.cat.winner, B.cat.winner, L.cat.draw, B.cat.draw, L.cat.penalty, B.cat.penalty, 1
+    L.cat.winner, B.cat.winner, L.cat.draw, B.cat.draw, L.cat.penalty, B.cat.penalty,
+    L.cat.redCard, B.cat.redCard, 1
   );
 
   const avgGoals = st.scoredMatches > 0 ? (st.totalGoalsActual / st.scoredMatches).toFixed(1) : "—";
@@ -813,6 +834,7 @@ function renderStats() {
       ${statBar("Winner Calls", L.cat.winner, B.cat.winner, catMax)}
       ${statBar("Draw Calls", L.cat.draw, B.cat.draw, catMax)}
       ${statBar("Penalty Calls", L.cat.penalty, B.cat.penalty, catMax)}
+      ${statBar("Red Card Calls", L.cat.redCard, B.cat.redCard, catMax)}
     </div>
 
     <div class="section-title">Accuracy</div>
@@ -822,6 +844,7 @@ function renderStats() {
       ${accRow("Winner (decisive games)", L.hits.winner, L.decisiveGames, B.hits.winner, B.decisiveGames)}
       ${accRow("Draw spotted", L.hits.draw, L.drawGames, B.hits.draw, B.drawGames)}
       ${accRow("Penalty call", L.hits.penalty, L.predicted, B.hits.penalty, B.predicted)}
+      ${accRow("Red card call", L.hits.redCard, L.redCardEligible, B.hits.redCard, B.redCardEligible)}
     </div>
 
     <div class="section-title">Head to Head</div>
@@ -858,7 +881,7 @@ function funFact(title, value, sub) {
 }
 
 function renderSettings() {
-  const maxPts = SCORING.scoreA + SCORING.scoreB + SCORING.winner + SCORING.draw + SCORING.penalty;
+  const maxPts = SCORING.scoreA + SCORING.scoreB + SCORING.winner + SCORING.draw + SCORING.penalty + (SCORING.redCard || 0);
   const row = (label, group, field, value, note) => `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
       <div>
@@ -878,6 +901,7 @@ function renderSettings() {
       ${row("Correct Winner", "scoring", "winner", SCORING.winner, "Points for predicting the winning team")}
       ${row("Correct Draw", "scoring", "draw", SCORING.draw, "Points for correctly predicting a draw")}
       ${row("In-Game Penalty", "scoring", "penalty", SCORING.penalty, "Points for predicting whether a penalty was awarded")}
+      ${row("Red Card", "scoring", "redCard", SCORING.redCard ?? 5, "Points for predicting whether a red card was shown")}
       <div style="display:flex;justify-content:space-between;padding:12px 0 2px;font-size:13px">
         <span style="color:rgba(255,255,255,0.5);font-weight:600">Max points per game</span>
         <span style="color:#2ecc71;font-weight:800;font-size:16px">${maxPts}</span>
