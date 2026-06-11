@@ -107,7 +107,25 @@
 <body>
 <div id="app"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
+// ── Firebase ──────────────────────────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyA05ZWh8yTTvsgYTOpIdXBnp6CyKFdtmSQ",
+  authDomain: "luisfre-wc-tracker26.firebaseapp.com",
+  projectId: "luisfre-wc-tracker26",
+  storageBucket: "luisfre-wc-tracker26.firebasestorage.app",
+  messagingSenderId: "175708118407",
+  appId: "1:175708118407:web:f26651ef2d23045af48722",
+};
+let db = null;
+let fsConnected = false;
+try {
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.firestore();
+} catch (e) { console.error("Firebase init failed", e); }
+
 // ── Data ──────────────────────────────────────────────────────────────────────
 const GROUP_MATCHES = [
   { id:1,  date:"Jun 11", group:"A", teamA:"Mexico",         teamB:"South Africa",   venue:"Mexico City" },
@@ -184,8 +202,10 @@ const GROUP_MATCHES = [
   { id:72, date:"Jun 27", group:"J", teamA:"Jordan",         teamB:"Argentina",      venue:"Dallas" },
 ];
 
-const SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5 };
-const PAYOUT = { ptsPerUnit: 100, dollarsPerUnit: 20 };
+const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5 };
+const DEFAULT_PAYOUT = { ptsPerUnit: 100, dollarsPerUnit: 20 };
+let SCORING = { ...DEFAULT_SCORING };
+let PAYOUT = { ...DEFAULT_PAYOUT };
 
 const FLAGS = {
   "Mexico":"🇲🇽","South Africa":"🇿🇦","South Korea":"🇰🇷","Czechia":"🇨🇿","Canada":"🇨🇦",
@@ -213,7 +233,7 @@ let drafts = {};      // matchId -> prediction draft
 let resultDrafts = {}; // matchId -> result draft
 let resultOpen = {};   // matchId -> bool
 
-function loadState() {
+function loadLocalCache() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
     if (raw) {
@@ -221,22 +241,80 @@ function loadState() {
       state.predictions = saved.predictions || {};
       state.results = saved.results || {};
       state.user = saved.user || null;
+      if (saved.scoring) SCORING = { ...DEFAULT_SCORING, ...saved.scoring };
+      if (saved.payout) PAYOUT = { ...DEFAULT_PAYOUT, ...saved.payout };
     }
-  } catch (e) { console.error("load failed", e); }
+  } catch (e) { console.error("local load failed", e); }
 }
 
-function saveState() {
+function saveLocalCache() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify({
       predictions: state.predictions,
       results: state.results,
       user: state.user,
+      scoring: SCORING,
+      payout: PAYOUT,
     }));
+  } catch (e) { console.error("local cache failed", e); }
+}
+
+// Real-time listeners: Firestore is source of truth
+function startFirestoreSync() {
+  if (!db) return;
+  db.collection("tracker").doc("predictions").onSnapshot(doc => {
+    fsConnected = true;
+    if (doc.exists) {
+      try {
+        const data = JSON.parse(doc.data().json || "{}");
+        state.predictions = data;
+        saveLocalCache();
+        render();
+      } catch (e) { console.error("predictions parse failed", e); }
+    }
+  }, err => { fsConnected = false; console.error("predictions listener error", err); render(); });
+
+  db.collection("tracker").doc("results").onSnapshot(doc => {
+    fsConnected = true;
+    if (doc.exists) {
+      try {
+        const data = JSON.parse(doc.data().json || "{}");
+        state.results = data;
+        saveLocalCache();
+        render();
+      } catch (e) { console.error("results parse failed", e); }
+    }
+  }, err => { fsConnected = false; console.error("results listener error", err); render(); });
+
+  db.collection("tracker").doc("settings").onSnapshot(doc => {
+    fsConnected = true;
+    if (doc.exists) {
+      try {
+        const data = JSON.parse(doc.data().json || "{}");
+        SCORING = { ...DEFAULT_SCORING, scoreA: data.scoreA ?? 15, scoreB: data.scoreB ?? 15, winner: data.winner ?? 10, draw: data.draw ?? 5, penalty: data.penalty ?? 5 };
+        PAYOUT = { ptsPerUnit: data.ptsPerUnit ?? 100, dollarsPerUnit: data.dollarsPerUnit ?? 20 };
+        saveLocalCache();
+        render();
+      } catch (e) { console.error("settings parse failed", e); }
+    }
+  }, err => { fsConnected = false; console.error("settings listener error", err); render(); });
+}
+
+async function pushDoc(docName, obj) {
+  if (!db) { alert("⚠️ No database connection — change not synced"); return false; }
+  try {
+    await db.collection("tracker").doc(docName).set({ json: JSON.stringify(obj) });
     return true;
   } catch (e) {
-    alert("⚠️ Save failed — your browser may be blocking storage (private mode?)");
+    console.error("push failed", e);
+    alert("⚠️ Sync failed — check your connection and try again");
     return false;
   }
+}
+
+function saveState() {
+  saveLocalCache();
+  return true;
 }
 
 // ── Scoring ───────────────────────────────────────────────────────────────────
@@ -275,21 +353,40 @@ function ptsClass(p) { return p >= 40 ? "high" : p >= 20 ? "mid" : ""; }
 window.selectUser = function(name) { state.user = name; saveState(); render(); };
 window.switchUser = function() { state.user = null; saveState(); render(); };
 window.setTab = function(t) { state.tab = t; render(); };
+window.updateSetting = async function(group, field, value) {
+  const num = Number(value);
+  if (isNaN(num) || num < 0) return;
+  if (group === "scoring") SCORING[field] = num;
+  else PAYOUT[field] = num;
+  saveLocalCache();
+  render();
+  await pushDoc("settings", { ...SCORING, ...PAYOUT });
+};
+window.resetSettings = async function() {
+  if (!confirm("Reset all point values and payout to defaults?")) return;
+  SCORING = { ...DEFAULT_SCORING };
+  PAYOUT = { ...DEFAULT_PAYOUT };
+  saveLocalCache();
+  render();
+  await pushDoc("settings", { ...SCORING, ...PAYOUT });
+};
 
 window.updateDraft = function(id, field, value) {
   drafts[id] = drafts[id] || { scoreA:"", scoreB:"", draw:"", penalty:"" };
   drafts[id][field] = value;
   render();
 };
-window.lockPrediction = function(id) {
+window.lockPrediction = async function(id) {
   const d = drafts[id];
   if (!d || d.scoreA === "" || d.scoreB === "") return;
   if (!confirm("Lock this prediction? It can't be changed after.")) return;
   const userKey = state.user.toLowerCase();
   state.predictions[id] = state.predictions[id] || {};
-  state.predictions[id][userKey] = { ...d, locked: true };
-  if (saveState()) delete drafts[id];
+  state.predictions[id][userKey] = { ...d, locked: true, lockedAt: new Date().toISOString() };
+  saveLocalCache();
+  delete drafts[id];
   render();
+  await pushDoc("predictions", state.predictions);
 };
 window.toggleResultForm = function(id) { resultOpen[id] = !resultOpen[id]; render(); };
 window.updateResultDraft = function(id, field, value) {
@@ -297,18 +394,20 @@ window.updateResultDraft = function(id, field, value) {
   resultDrafts[id][field] = value;
   render();
 };
-window.submitResult = function(id) {
+window.submitResult = async function(id) {
   const d = resultDrafts[id];
   if (!d || d.scoreA === "" || d.scoreB === "") return;
   if (!confirm("Confirm final result? This scores the match.")) return;
   const draw = String(d.scoreA) === String(d.scoreB) ? "Y" : "N";
   const winner = draw === "Y" ? "" : (Number(d.scoreA) > Number(d.scoreB) ? "A" : "B");
-  state.results[id] = { scoreA: d.scoreA, scoreB: d.scoreB, penalty: d.penalty || "N", draw, winner, entered: true };
-  if (saveState()) { delete resultDrafts[id]; delete resultOpen[id]; }
+  state.results[id] = { scoreA: d.scoreA, scoreB: d.scoreB, penalty: d.penalty || "N", draw, winner, entered: true, enteredBy: state.user };
+  saveLocalCache();
+  delete resultDrafts[id]; delete resultOpen[id];
   render();
+  await pushDoc("results", state.results);
 };
 window.exportData = function() {
-  const data = JSON.stringify({ predictions: state.predictions, results: state.results }, null, 2);
+  const data = JSON.stringify({ predictions: state.predictions, results: state.results, scoring: SCORING, payout: PAYOUT }, null, 2);
   const blob = new Blob([data], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
@@ -339,9 +438,14 @@ window.importData = function() {
         Object.keys(data.results || {}).forEach(id => {
           if (data.results[id] && data.results[id].entered) state.results[id] = data.results[id];
         });
-        saveState();
+        if (data.scoring) SCORING = { ...DEFAULT_SCORING, ...data.scoring };
+        if (data.payout) PAYOUT = { ...DEFAULT_PAYOUT, ...data.payout };
+        saveLocalCache();
         render();
-        alert("✓ Imported successfully");
+        pushDoc("predictions", state.predictions);
+        pushDoc("results", state.results);
+        pushDoc("settings", { ...SCORING, ...PAYOUT });
+        alert("✓ Imported and synced");
       } catch (err) { alert("Import failed: invalid file"); }
     };
     reader.readAsText(file);
@@ -367,6 +471,8 @@ function render() {
     bodyHtml = completed.length === 0
       ? '<div class="empty-state">No completed matches yet.</div>'
       : completed.map(renderCard).join("");
+  } else if (state.tab === "settings") {
+    bodyHtml = renderSettings();
   } else {
     bodyHtml = renderStandings(t, completed.length);
   }
@@ -376,7 +482,7 @@ function render() {
       <div class="header-top">
         <div>
           <div class="header-title">⚽ WC 2026</div>
-          <div class="header-sub">Playing as <strong>${esc(state.user)}</strong> · <a onclick="switchUser()">Switch</a></div>
+          <div class="header-sub">Playing as <strong>${esc(state.user)}</strong> · <a onclick="switchUser()">Switch</a> · ${fsConnected ? '<span style="color:#2ecc71">● synced</span>' : '<span style="color:#e67e22">● offline</span>'}</div>
         </div>
         <div class="score-badge">
           <div class="label">STANDINGS</div>
@@ -387,6 +493,7 @@ function render() {
         <button class="tab ${state.tab==='upcoming'?'active':''}" onclick="setTab('upcoming')">Upcoming (${upcoming.length})</button>
         <button class="tab ${state.tab==='completed'?'active':''}" onclick="setTab('completed')">Completed (${completed.length})</button>
         <button class="tab ${state.tab==='standings'?'active':''}" onclick="setTab('standings')">Standings</button>
+        <button class="tab ${state.tab==='settings'?'active':''}" onclick="setTab('settings')">⚙️</button>
       </div>
     </div>
     <div class="body">${bodyHtml}
@@ -406,7 +513,7 @@ function renderUserSelect() {
       <div class="us-sub">Who are you?</div>
       <button class="us-btn" onclick="selectUser('Luis')">Luis</button>
       <button class="us-btn" onclick="selectUser('Bibi')">Bibi</button>
-      <div class="us-note">Data is stored on this device. Use Export/Import to sync between phones.</div>
+      <div class="us-note">Synced live via Firestore — you and Bibi can use your own phones. 🟢</div>
     </div>
   `;
 }
@@ -571,9 +678,53 @@ function renderStandings(t, completedCount) {
   `;
 }
 
+function renderSettings() {
+  const maxPts = SCORING.scoreA + SCORING.scoreB + SCORING.winner + SCORING.draw + SCORING.penalty;
+  const row = (label, group, field, value, note) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+      <div>
+        <div style="font-size:13px;font-weight:600">${label}</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px">${note}</div>
+      </div>
+      <input type="number" inputmode="numeric" min="0" value="${value}"
+        style="width:72px;height:42px;border-radius:8px;border:1.5px solid rgba(249,194,46,0.35);background:rgba(249,194,46,0.07);color:#f9c22e;font-size:18px;font-weight:700;text-align:center;outline:none;font-family:inherit"
+        onchange="updateSetting('${group}','${field}',this.value)">
+    </div>`;
+
+  return `
+    <div class="section-title">Scoring Settings</div>
+    <div class="standings-card">
+      ${row("Exact Score — Team A", "scoring", "scoreA", SCORING.scoreA, "Points for predicting Team A's exact goals")}
+      ${row("Exact Score — Team B", "scoring", "scoreB", SCORING.scoreB, "Points for predicting Team B's exact goals")}
+      ${row("Correct Winner", "scoring", "winner", SCORING.winner, "Points for predicting the winning team")}
+      ${row("Correct Draw", "scoring", "draw", SCORING.draw, "Points for correctly predicting a draw")}
+      ${row("In-Game Penalty", "scoring", "penalty", SCORING.penalty, "Points for predicting whether a penalty was awarded")}
+      <div style="display:flex;justify-content:space-between;padding:12px 0 2px;font-size:13px">
+        <span style="color:rgba(255,255,255,0.5);font-weight:600">Max points per game</span>
+        <span style="color:#2ecc71;font-weight:800;font-size:16px">${maxPts}</span>
+      </div>
+    </div>
+    <div class="section-title">Payout</div>
+    <div class="standings-card">
+      ${row("Points per unit", "payout", "ptsPerUnit", PAYOUT.ptsPerUnit, "How many points make one payout unit")}
+      ${row("Dollars per unit ($)", "payout", "dollarsPerUnit", PAYOUT.dollarsPerUnit, "Dollar value of each unit")}
+      <div style="font-size:12px;color:rgba(255,255,255,0.45);padding-top:12px">
+        Current rate: every <strong style="color:#f9c22e">${PAYOUT.ptsPerUnit} pts</strong> difference = <strong style="color:#f9c22e">$${PAYOUT.dollarsPerUnit}</strong>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:8px">
+      <button onclick="resetSettings()" style="background:none;border:1px solid rgba(231,76,60,0.4);color:#e74c3c;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">Reset to defaults</button>
+    </div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);text-align:center;margin-top:16px;line-height:1.6;padding:0 12px">
+      ⚠️ Changing point values re-scores ALL matches, including completed ones — and syncs to both phones instantly.
+    </div>
+  `;
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
-loadState();
+loadLocalCache();
 render();
+startFirestoreSync();
 </script>
 </body>
 </html>
