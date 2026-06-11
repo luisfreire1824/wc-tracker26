@@ -473,6 +473,8 @@ function render() {
       : completed.map(renderCard).join("");
   } else if (state.tab === "settings") {
     bodyHtml = renderSettings();
+  } else if (state.tab === "stats") {
+    bodyHtml = renderStats();
   } else {
     bodyHtml = renderStandings(t, completed.length);
   }
@@ -493,6 +495,7 @@ function render() {
         <button class="tab ${state.tab==='upcoming'?'active':''}" onclick="setTab('upcoming')">Upcoming (${upcoming.length})</button>
         <button class="tab ${state.tab==='completed'?'active':''}" onclick="setTab('completed')">Completed (${completed.length})</button>
         <button class="tab ${state.tab==='standings'?'active':''}" onclick="setTab('standings')">Standings</button>
+        <button class="tab ${state.tab==='stats'?'active':''}" onclick="setTab('stats')">Stats</button>
         <button class="tab ${state.tab==='settings'?'active':''}" onclick="setTab('settings')">⚙️</button>
       </div>
     </div>
@@ -676,6 +679,182 @@ function renderStandings(t, completedCount) {
       <div class="progress-bar"><div class="progress-fill" style="width:${(completedCount/GROUP_MATCHES.length)*100}%"></div></div>
     </div>
   `;
+}
+
+// ── Analytics ─────────────────────────────────────────────────────────────────
+function computeStats() {
+  const players = { luis: emptyPlayerStats(), bibi: emptyPlayerStats() };
+  let rowWins = { luis: 0, bibi: 0, tie: 0 };
+  let totalGoalsActual = 0, scoredMatches = 0;
+  let biggestSwing = { diff: 0, match: null, winner: null };
+
+  GROUP_MATCHES.forEach(m => {
+    const result = state.results[m.id];
+    if (!result || !result.entered) return;
+    const pred = state.predictions[m.id] || {};
+    const pts = {};
+
+    ["luis","bibi"].forEach(k => {
+      const p = pred[k];
+      const s = players[k];
+      if (!p || !p.locked) return;
+      s.predicted++;
+      let matchPts = 0;
+
+      // Exact scores
+      const hitA = String(p.scoreA) === String(result.scoreA);
+      const hitB = String(p.scoreB) === String(result.scoreB);
+      if (hitA) { s.cat.exactA += SCORING.scoreA; s.hits.exactA++; matchPts += SCORING.scoreA; }
+      if (hitB) { s.cat.exactB += SCORING.scoreB; s.hits.exactB++; matchPts += SCORING.scoreB; }
+      if (hitA && hitB) s.perfectScores++;
+
+      // Winner / draw
+      if (result.draw === "Y") {
+        if (p.draw === "Y") { s.cat.draw += SCORING.draw; s.hits.draw++; matchPts += SCORING.draw; }
+        s.drawGames++;
+      } else {
+        const predWinner = Number(p.scoreA) > Number(p.scoreB) ? "A" : "B";
+        if (predWinner === result.winner) { s.cat.winner += SCORING.winner; s.hits.winner++; matchPts += SCORING.winner; }
+        s.decisiveGames++;
+      }
+
+      // Penalty
+      if (p.penalty === result.penalty) { s.cat.penalty += SCORING.penalty; s.hits.penalty++; matchPts += SCORING.penalty; }
+
+      s.total += matchPts;
+      if (matchPts > s.bestMatch.pts) s.bestMatch = { pts: matchPts, match: m };
+      if (matchPts === 0) s.blanks++;
+      pts[k] = matchPts;
+    });
+
+    // Head-to-head per match
+    if (pts.luis !== undefined && pts.bibi !== undefined) {
+      scoredMatches++;
+      if (pts.luis > pts.bibi) rowWins.luis++;
+      else if (pts.bibi > pts.luis) rowWins.bibi++;
+      else rowWins.tie++;
+      const diff = Math.abs(pts.luis - pts.bibi);
+      if (diff > biggestSwing.diff) biggestSwing = { diff, match: m, winner: pts.luis > pts.bibi ? "Luis" : "Bibi" };
+    }
+    totalGoalsActual += Number(result.scoreA) + Number(result.scoreB);
+  });
+
+  return { players, rowWins, scoredMatches, totalGoalsActual, biggestSwing };
+}
+
+function emptyPlayerStats() {
+  return {
+    predicted: 0, total: 0, perfectScores: 0, blanks: 0,
+    drawGames: 0, decisiveGames: 0,
+    cat: { exactA: 0, exactB: 0, winner: 0, draw: 0, penalty: 0 },
+    hits: { exactA: 0, exactB: 0, winner: 0, draw: 0, penalty: 0 },
+    bestMatch: { pts: -1, match: null },
+  };
+}
+
+function statBar(label, luisVal, bibiVal, maxVal) {
+  const lw = maxVal > 0 ? (luisVal / maxVal) * 100 : 0;
+  const bw = maxVal > 0 ? (bibiVal / maxVal) * 100 : 0;
+  return `
+    <div style="margin-bottom:14px">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:5px">
+        <span style="font-weight:600;color:rgba(255,255,255,0.7)">${label}</span>
+        <span style="color:rgba(255,255,255,0.45)">L: <strong style="color:#5dade2">${luisVal}</strong> · B: <strong style="color:#bb8fce">${bibiVal}</strong></span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:3px">
+        <div style="height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${lw}%;background:#3498db;border-radius:4px"></div>
+        </div>
+        <div style="height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden">
+          <div style="height:100%;width:${bw}%;background:#9b59b6;border-radius:4px"></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function accRow(label, lHits, lTotal, bHits, bTotal) {
+  const lPct = lTotal > 0 ? Math.round((lHits / lTotal) * 100) : 0;
+  const bPct = bTotal > 0 ? Math.round((bHits / bTotal) * 100) : 0;
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px">
+      <span style="color:rgba(255,255,255,0.65)">${label}</span>
+      <span>
+        <strong style="color:#5dade2">${lPct}%</strong> <span style="font-size:10px;color:rgba(255,255,255,0.3)">(${lHits}/${lTotal})</span>
+        &nbsp;·&nbsp;
+        <strong style="color:#bb8fce">${bPct}%</strong> <span style="font-size:10px;color:rgba(255,255,255,0.3)">(${bHits}/${bTotal})</span>
+      </span>
+    </div>`;
+}
+
+function renderStats() {
+  const st = computeStats();
+  const L = st.players.luis, B = st.players.bibi;
+
+  if (st.scoredMatches === 0 && L.predicted === 0 && B.predicted === 0) {
+    return '<div class="empty-state">No scored matches yet — stats will appear once results come in. 📊</div>';
+  }
+
+  const catMax = Math.max(
+    L.cat.exactA + L.cat.exactB, B.cat.exactA + B.cat.exactB,
+    L.cat.winner, B.cat.winner, L.cat.draw, B.cat.draw, L.cat.penalty, B.cat.penalty, 1
+  );
+
+  const avgGoals = st.scoredMatches > 0 ? (st.totalGoalsActual / st.scoredMatches).toFixed(1) : "—";
+
+  return `
+    <div style="display:flex;gap:10px;margin-bottom:4px;font-size:11px;color:rgba(255,255,255,0.4);align-items:center">
+      <span><span style="display:inline-block;width:10px;height:10px;background:#3498db;border-radius:2px;margin-right:4px"></span>Luis</span>
+      <span><span style="display:inline-block;width:10px;height:10px;background:#9b59b6;border-radius:2px;margin-right:4px"></span>Bibi</span>
+    </div>
+
+    <div class="section-title">Points by Category</div>
+    <div class="standings-card">
+      ${statBar("Exact Scores", L.cat.exactA + L.cat.exactB, B.cat.exactA + B.cat.exactB, catMax)}
+      ${statBar("Winner Calls", L.cat.winner, B.cat.winner, catMax)}
+      ${statBar("Draw Calls", L.cat.draw, B.cat.draw, catMax)}
+      ${statBar("Penalty Calls", L.cat.penalty, B.cat.penalty, catMax)}
+    </div>
+
+    <div class="section-title">Accuracy</div>
+    <div class="standings-card">
+      ${accRow("Team A exact score", L.hits.exactA, L.predicted, B.hits.exactA, B.predicted)}
+      ${accRow("Team B exact score", L.hits.exactB, L.predicted, B.hits.exactB, B.predicted)}
+      ${accRow("Winner (decisive games)", L.hits.winner, L.decisiveGames, B.hits.winner, B.decisiveGames)}
+      ${accRow("Draw spotted", L.hits.draw, L.drawGames, B.hits.draw, B.drawGames)}
+      ${accRow("Penalty call", L.hits.penalty, L.predicted, B.hits.penalty, B.predicted)}
+    </div>
+
+    <div class="section-title">Head to Head</div>
+    <div class="standings-card">
+      <div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px">
+        <div><div style="font-size:24px;font-weight:900;color:#5dade2">${st.rowWins.luis}</div><div style="font-size:11px;color:rgba(255,255,255,0.4)">Luis wins</div></div>
+        <div><div style="font-size:24px;font-weight:900;color:rgba(255,255,255,0.4)">${st.rowWins.tie}</div><div style="font-size:11px;color:rgba(255,255,255,0.4)">Ties</div></div>
+        <div><div style="font-size:24px;font-weight:900;color:#bb8fce">${st.rowWins.bibi}</div><div style="font-size:11px;color:rgba(255,255,255,0.4)">Bibi wins</div></div>
+      </div>
+      <div style="font-size:11px;color:rgba(255,255,255,0.35);text-align:center">Match-by-match point battles (${st.scoredMatches} scored)</div>
+    </div>
+
+    <div class="section-title">Fun Facts</div>
+    <div class="standings-card">
+      ${funFact("🎯 Perfect scorelines", `Luis: ${L.perfectScores} · Bibi: ${B.perfectScores}`, "Both teams' goals nailed exactly")}
+      ${L.bestMatch.match ? funFact("🔥 Luis's best match", `${L.bestMatch.pts} pts — ${esc(L.bestMatch.match.teamA)} vs ${esc(L.bestMatch.match.teamB)}`, "") : ""}
+      ${B.bestMatch.match ? funFact("🔥 Bibi's best match", `${B.bestMatch.pts} pts — ${esc(B.bestMatch.match.teamA)} vs ${esc(B.bestMatch.match.teamB)}`, "") : ""}
+      ${st.biggestSwing.match ? funFact("⚡ Biggest blowout", `${st.biggestSwing.winner} by ${st.biggestSwing.diff} pts — ${esc(st.biggestSwing.match.teamA)} vs ${esc(st.biggestSwing.match.teamB)}`, "Largest single-match point gap") : ""}
+      ${funFact("🥅 Avg goals per match", avgGoals, "Across all scored matches")}
+      ${funFact("😬 Blank matches", `Luis: ${L.blanks} · Bibi: ${B.blanks}`, "Zero points scored")}
+    </div>
+  `;
+}
+
+function funFact(title, value, sub) {
+  return `
+    <div style="padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px">
+        <span style="font-size:13px;font-weight:600;color:rgba(255,255,255,0.7)">${title}</span>
+        <span style="font-size:13px;font-weight:700;color:#f9c22e;text-align:right">${value}</span>
+      </div>
+      ${sub ? `<div style="font-size:10px;color:rgba(255,255,255,0.3);margin-top:2px">${sub}</div>` : ""}
+    </div>`;
 }
 
 function renderSettings() {
