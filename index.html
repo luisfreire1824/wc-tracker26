@@ -31,7 +31,7 @@
 
   .teams-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 8px; }
   .team { text-align: center; flex: 1; }
-  .team-flag { font-size: 28px; line-height: 1; }
+  .team-flag { line-height: 1; display: flex; justify-content: center; }
   .team-name { font-size: 11px; color: rgba(255,255,255,0.7); margin-top: 4px; font-weight: 500; }
   .vs { font-size: 13px; color: rgba(255,255,255,0.3); font-weight: 700; padding: 0 8px; }
 
@@ -129,78 +129,78 @@ try {
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 const GROUP_MATCHES = [
-  { id:1,  date:"Jun 11", group:"A", teamA:"Mexico",         teamB:"South Africa",   venue:"Mexico City" },
-  { id:2,  date:"Jun 11", group:"A", teamA:"South Korea",    teamB:"Czechia",        venue:"Guadalajara" },
-  { id:3,  date:"Jun 12", group:"B", teamA:"Canada",         teamB:"Bosnia & Herz.", venue:"Toronto" },
-  { id:4,  date:"Jun 12", group:"D", teamA:"USA",            teamB:"Paraguay",       venue:"Los Angeles" },
-  { id:5,  date:"Jun 13", group:"B", teamA:"Qatar",          teamB:"Switzerland",    venue:"San Francisco" },
-  { id:6,  date:"Jun 13", group:"C", teamA:"Brazil",         teamB:"Morocco",        venue:"New York/NJ" },
-  { id:7,  date:"Jun 13", group:"C", teamA:"Haiti",          teamB:"Scotland",       venue:"Boston" },
-  { id:8,  date:"Jun 13", group:"D", teamA:"Australia",      teamB:"Turkiye",        venue:"Vancouver" },
-  { id:9,  date:"Jun 14", group:"E", teamA:"Germany",        teamB:"Curacao",        venue:"Houston" },
-  { id:10, date:"Jun 14", group:"F", teamA:"Netherlands",    teamB:"Japan",          venue:"Dallas" },
-  { id:11, date:"Jun 14", group:"E", teamA:"Ivory Coast",    teamB:"Ecuador",        venue:"Philadelphia" },
-  { id:12, date:"Jun 14", group:"F", teamA:"Sweden",         teamB:"Tunisia",        venue:"Monterrey" },
-  { id:13, date:"Jun 15", group:"H", teamA:"Spain",          teamB:"Cape Verde",     venue:"Atlanta" },
-  { id:14, date:"Jun 15", group:"G", teamA:"Belgium",        teamB:"Egypt",          venue:"Vancouver" },
-  { id:15, date:"Jun 15", group:"H", teamA:"Saudi Arabia",   teamB:"Uruguay",        venue:"Miami" },
-  { id:16, date:"Jun 15", group:"G", teamA:"Iran",           teamB:"New Zealand",    venue:"Los Angeles" },
-  { id:17, date:"Jun 16", group:"I", teamA:"France",         teamB:"Senegal",        venue:"New York/NJ" },
-  { id:18, date:"Jun 16", group:"I", teamA:"Iraq",           teamB:"Norway",         venue:"Boston" },
-  { id:19, date:"Jun 16", group:"J", teamA:"Argentina",      teamB:"Algeria",        venue:"Kansas City" },
-  { id:20, date:"Jun 16", group:"J", teamA:"Austria",        teamB:"Jordan",         venue:"San Francisco" },
-  { id:21, date:"Jun 17", group:"K", teamA:"Portugal",       teamB:"DR Congo",       venue:"Houston" },
-  { id:22, date:"Jun 17", group:"L", teamA:"England",        teamB:"Croatia",        venue:"Dallas" },
-  { id:23, date:"Jun 17", group:"L", teamA:"Ghana",          teamB:"Panama",         venue:"Toronto" },
-  { id:24, date:"Jun 17", group:"K", teamA:"Uzbekistan",     teamB:"Colombia",       venue:"Mexico City" },
-  { id:25, date:"Jun 18", group:"A", teamA:"Czechia",        teamB:"South Africa",   venue:"Atlanta" },
-  { id:26, date:"Jun 18", group:"B", teamA:"Switzerland",    teamB:"Bosnia & Herz.", venue:"Los Angeles" },
-  { id:27, date:"Jun 18", group:"B", teamA:"Canada",         teamB:"Qatar",          venue:"Vancouver" },
-  { id:28, date:"Jun 18", group:"A", teamA:"Mexico",         teamB:"South Korea",    venue:"Guadalajara" },
-  { id:29, date:"Jun 19", group:"C", teamA:"Scotland",       teamB:"Morocco",        venue:"Boston" },
-  { id:30, date:"Jun 19", group:"D", teamA:"USA",            teamB:"Australia",      venue:"Seattle" },
-  { id:31, date:"Jun 19", group:"C", teamA:"Brazil",         teamB:"Haiti",          venue:"Philadelphia" },
-  { id:32, date:"Jun 19", group:"D", teamA:"Turkiye",        teamB:"Paraguay",       venue:"San Francisco" },
-  { id:33, date:"Jun 20", group:"F", teamA:"Netherlands",    teamB:"Sweden",         venue:"Houston" },
-  { id:34, date:"Jun 20", group:"E", teamA:"Germany",        teamB:"Ivory Coast",    venue:"Toronto" },
-  { id:35, date:"Jun 20", group:"E", teamA:"Ecuador",        teamB:"Curacao",        venue:"Kansas City" },
-  { id:36, date:"Jun 20", group:"F", teamA:"Tunisia",        teamB:"Japan",          venue:"Monterrey" },
-  { id:37, date:"Jun 21", group:"H", teamA:"Spain",          teamB:"Saudi Arabia",   venue:"Atlanta" },
-  { id:38, date:"Jun 21", group:"G", teamA:"Belgium",        teamB:"Iran",           venue:"Los Angeles" },
-  { id:39, date:"Jun 21", group:"H", teamA:"Uruguay",        teamB:"Cape Verde",     venue:"Miami" },
-  { id:40, date:"Jun 21", group:"G", teamA:"New Zealand",    teamB:"Egypt",          venue:"Vancouver" },
-  { id:41, date:"Jun 22", group:"J", teamA:"Argentina",      teamB:"Austria",        venue:"Dallas" },
-  { id:42, date:"Jun 22", group:"I", teamA:"France",         teamB:"Iraq",           venue:"Philadelphia" },
-  { id:43, date:"Jun 22", group:"I", teamA:"Norway",         teamB:"Senegal",        venue:"New York/NJ" },
-  { id:44, date:"Jun 22", group:"J", teamA:"Jordan",         teamB:"Algeria",        venue:"San Francisco" },
-  { id:45, date:"Jun 23", group:"K", teamA:"Portugal",       teamB:"Uzbekistan",     venue:"Houston" },
-  { id:46, date:"Jun 23", group:"L", teamA:"England",        teamB:"Ghana",          venue:"Boston" },
-  { id:47, date:"Jun 23", group:"L", teamA:"Panama",         teamB:"Croatia",        venue:"Toronto" },
-  { id:48, date:"Jun 23", group:"K", teamA:"Colombia",       teamB:"DR Congo",       venue:"Guadalajara" },
-  { id:49, date:"Jun 24", group:"B", teamA:"Switzerland",    teamB:"Canada",         venue:"Vancouver" },
-  { id:50, date:"Jun 24", group:"B", teamA:"Bosnia & Herz.", teamB:"Qatar",          venue:"Seattle" },
-  { id:51, date:"Jun 24", group:"C", teamA:"Scotland",       teamB:"Brazil",         venue:"Miami" },
-  { id:52, date:"Jun 24", group:"C", teamA:"Morocco",        teamB:"Haiti",          venue:"Atlanta" },
-  { id:53, date:"Jun 24", group:"A", teamA:"Czechia",        teamB:"Mexico",         venue:"Mexico City" },
-  { id:54, date:"Jun 24", group:"A", teamA:"South Africa",   teamB:"South Korea",    venue:"Monterrey" },
-  { id:55, date:"Jun 25", group:"E", teamA:"Ecuador",        teamB:"Germany",        venue:"New York/NJ" },
-  { id:56, date:"Jun 25", group:"E", teamA:"Curacao",        teamB:"Ivory Coast",    venue:"Philadelphia" },
-  { id:57, date:"Jun 25", group:"F", teamA:"Japan",          teamB:"Sweden",         venue:"Dallas" },
-  { id:58, date:"Jun 25", group:"F", teamA:"Tunisia",        teamB:"Netherlands",    venue:"Kansas City" },
-  { id:59, date:"Jun 25", group:"D", teamA:"Turkiye",        teamB:"USA",            venue:"Los Angeles" },
-  { id:60, date:"Jun 25", group:"D", teamA:"Paraguay",       teamB:"Australia",      venue:"San Francisco" },
-  { id:61, date:"Jun 26", group:"I", teamA:"Norway",         teamB:"France",         venue:"Boston" },
-  { id:62, date:"Jun 26", group:"I", teamA:"Senegal",        teamB:"Iraq",           venue:"Toronto" },
-  { id:63, date:"Jun 26", group:"H", teamA:"Cape Verde",     teamB:"Saudi Arabia",   venue:"Houston" },
-  { id:64, date:"Jun 26", group:"H", teamA:"Uruguay",        teamB:"Spain",          venue:"Guadalajara" },
-  { id:65, date:"Jun 26", group:"G", teamA:"Egypt",          teamB:"Iran",           venue:"Seattle" },
-  { id:66, date:"Jun 26", group:"G", teamA:"New Zealand",    teamB:"Belgium",        venue:"Vancouver" },
-  { id:67, date:"Jun 27", group:"L", teamA:"Panama",         teamB:"England",        venue:"New York/NJ" },
-  { id:68, date:"Jun 27", group:"L", teamA:"Croatia",        teamB:"Ghana",          venue:"Philadelphia" },
-  { id:69, date:"Jun 27", group:"K", teamA:"Colombia",       teamB:"Portugal",       venue:"Miami" },
-  { id:70, date:"Jun 27", group:"K", teamA:"DR Congo",       teamB:"Uzbekistan",     venue:"Atlanta" },
-  { id:71, date:"Jun 27", group:"J", teamA:"Algeria",        teamB:"Austria",        venue:"Kansas City" },
-  { id:72, date:"Jun 27", group:"J", teamA:"Jordan",         teamB:"Argentina",      venue:"Dallas" },
+  { id:1,  date:"Jun 11", time:"3:00 PM",  group:"A", teamA:"Mexico",         teamB:"South Africa",   venue:"Mexico City" },
+  { id:2,  date:"Jun 11", time:"10:00 PM", group:"A", teamA:"South Korea",    teamB:"Czechia",        venue:"Guadalajara" },
+  { id:3,  date:"Jun 12", time:"3:00 PM",  group:"B", teamA:"Canada",         teamB:"Bosnia & Herz.", venue:"Toronto" },
+  { id:4,  date:"Jun 12", time:"9:00 PM",  group:"D", teamA:"USA",            teamB:"Paraguay",       venue:"Los Angeles" },
+  { id:5,  date:"Jun 13", time:"3:00 PM",  group:"B", teamA:"Qatar",          teamB:"Switzerland",    venue:"San Francisco" },
+  { id:6,  date:"Jun 13", time:"6:00 PM",  group:"C", teamA:"Brazil",         teamB:"Morocco",        venue:"New York/NJ" },
+  { id:7,  date:"Jun 13", time:"9:00 PM",  group:"C", teamA:"Haiti",          teamB:"Scotland",       venue:"Boston" },
+  { id:8,  date:"Jun 14", time:"12:00 AM", group:"D", teamA:"Australia",      teamB:"Turkiye",        venue:"Vancouver" },
+  { id:9,  date:"Jun 14", time:"1:00 PM",  group:"E", teamA:"Germany",        teamB:"Curacao",        venue:"Houston" },
+  { id:10, date:"Jun 14", time:"4:00 PM",  group:"F", teamA:"Netherlands",    teamB:"Japan",          venue:"Dallas" },
+  { id:11, date:"Jun 14", time:"7:00 PM",  group:"E", teamA:"Ivory Coast",    teamB:"Ecuador",        venue:"Philadelphia" },
+  { id:12, date:"Jun 14", time:"10:00 PM", group:"F", teamA:"Sweden",         teamB:"Tunisia",        venue:"Monterrey" },
+  { id:13, date:"Jun 15", time:"12:00 PM", group:"H", teamA:"Spain",          teamB:"Cape Verde",     venue:"Atlanta" },
+  { id:14, date:"Jun 15", time:"3:00 PM",  group:"G", teamA:"Belgium",        teamB:"Egypt",          venue:"Seattle" },
+  { id:15, date:"Jun 15", time:"6:00 PM",  group:"H", teamA:"Saudi Arabia",   teamB:"Uruguay",        venue:"Miami" },
+  { id:16, date:"Jun 15", time:"9:00 PM",  group:"G", teamA:"Iran",           teamB:"New Zealand",    venue:"Los Angeles" },
+  { id:17, date:"Jun 16", time:"3:00 PM",  group:"I", teamA:"France",         teamB:"Senegal",        venue:"New York/NJ" },
+  { id:18, date:"Jun 16", time:"6:00 PM",  group:"I", teamA:"Iraq",           teamB:"Norway",         venue:"Boston" },
+  { id:19, date:"Jun 16", time:"9:00 PM",  group:"J", teamA:"Argentina",      teamB:"Algeria",        venue:"Kansas City" },
+  { id:20, date:"Jun 17", time:"12:00 AM", group:"J", teamA:"Austria",        teamB:"Jordan",         venue:"San Francisco" },
+  { id:21, date:"Jun 17", time:"1:00 PM",  group:"K", teamA:"Portugal",       teamB:"DR Congo",       venue:"Houston" },
+  { id:22, date:"Jun 17", time:"4:00 PM",  group:"L", teamA:"England",        teamB:"Croatia",        venue:"Dallas" },
+  { id:23, date:"Jun 17", time:"7:00 PM",  group:"L", teamA:"Ghana",          teamB:"Panama",         venue:"Toronto" },
+  { id:24, date:"Jun 17", time:"10:00 PM", group:"K", teamA:"Uzbekistan",     teamB:"Colombia",       venue:"Mexico City" },
+  { id:25, date:"Jun 18", time:"12:00 PM", group:"A", teamA:"Czechia",        teamB:"South Africa",   venue:"Atlanta" },
+  { id:26, date:"Jun 18", time:"3:00 PM",  group:"B", teamA:"Switzerland",    teamB:"Bosnia & Herz.", venue:"Los Angeles" },
+  { id:27, date:"Jun 18", time:"6:00 PM",  group:"B", teamA:"Canada",         teamB:"Qatar",          venue:"Vancouver" },
+  { id:28, date:"Jun 18", time:"9:00 PM",  group:"A", teamA:"Mexico",         teamB:"South Korea",    venue:"Guadalajara" },
+  { id:29, date:"Jun 19", time:"6:00 PM",  group:"C", teamA:"Scotland",       teamB:"Morocco",        venue:"Boston" },
+  { id:30, date:"Jun 19", time:"3:00 PM",  group:"D", teamA:"USA",            teamB:"Australia",      venue:"Seattle" },
+  { id:31, date:"Jun 19", time:"8:30 PM",  group:"C", teamA:"Brazil",         teamB:"Haiti",          venue:"Philadelphia" },
+  { id:32, date:"Jun 19", time:"11:00 PM", group:"D", teamA:"Turkiye",        teamB:"Paraguay",       venue:"San Francisco" },
+  { id:33, date:"Jun 20", time:"1:00 PM",  group:"F", teamA:"Netherlands",    teamB:"Sweden",         venue:"Houston" },
+  { id:34, date:"Jun 20", time:"4:00 PM",  group:"E", teamA:"Germany",        teamB:"Ivory Coast",    venue:"Toronto" },
+  { id:35, date:"Jun 20", time:"8:00 PM",  group:"E", teamA:"Ecuador",        teamB:"Curacao",        venue:"Kansas City" },
+  { id:36, date:"Jun 21", time:"12:00 AM", group:"F", teamA:"Tunisia",        teamB:"Japan",          venue:"Monterrey" },
+  { id:37, date:"Jun 21", time:"12:00 PM", group:"H", teamA:"Spain",          teamB:"Saudi Arabia",   venue:"Atlanta" },
+  { id:38, date:"Jun 21", time:"3:00 PM",  group:"G", teamA:"Belgium",        teamB:"Iran",           venue:"Los Angeles" },
+  { id:39, date:"Jun 21", time:"6:00 PM",  group:"H", teamA:"Uruguay",        teamB:"Cape Verde",     venue:"Miami" },
+  { id:40, date:"Jun 21", time:"9:00 PM",  group:"G", teamA:"New Zealand",    teamB:"Egypt",          venue:"Vancouver" },
+  { id:41, date:"Jun 22", time:"1:00 PM",  group:"J", teamA:"Argentina",      teamB:"Austria",        venue:"Dallas" },
+  { id:42, date:"Jun 22", time:"5:00 PM",  group:"I", teamA:"France",         teamB:"Iraq",           venue:"Philadelphia" },
+  { id:43, date:"Jun 22", time:"8:00 PM",  group:"I", teamA:"Norway",         teamB:"Senegal",        venue:"New York/NJ" },
+  { id:44, date:"Jun 22", time:"11:00 PM", group:"J", teamA:"Jordan",         teamB:"Algeria",        venue:"San Francisco" },
+  { id:45, date:"Jun 23", time:"1:00 PM",  group:"K", teamA:"Portugal",       teamB:"Uzbekistan",     venue:"Houston" },
+  { id:46, date:"Jun 23", time:"4:00 PM",  group:"L", teamA:"England",        teamB:"Ghana",          venue:"Boston" },
+  { id:47, date:"Jun 23", time:"7:00 PM",  group:"L", teamA:"Panama",         teamB:"Croatia",        venue:"Toronto" },
+  { id:48, date:"Jun 23", time:"10:00 PM", group:"K", teamA:"Colombia",       teamB:"DR Congo",       venue:"Guadalajara" },
+  { id:49, date:"Jun 24", time:"3:00 PM",  group:"B", teamA:"Switzerland",    teamB:"Canada",         venue:"Vancouver" },
+  { id:50, date:"Jun 24", time:"3:00 PM",  group:"B", teamA:"Bosnia & Herz.", teamB:"Qatar",          venue:"Seattle" },
+  { id:51, date:"Jun 24", time:"6:00 PM",  group:"C", teamA:"Scotland",       teamB:"Brazil",         venue:"Miami" },
+  { id:52, date:"Jun 24", time:"6:00 PM",  group:"C", teamA:"Morocco",        teamB:"Haiti",          venue:"Atlanta" },
+  { id:53, date:"Jun 24", time:"9:00 PM",  group:"A", teamA:"Czechia",        teamB:"Mexico",         venue:"Mexico City" },
+  { id:54, date:"Jun 24", time:"9:00 PM",  group:"A", teamA:"South Africa",   teamB:"South Korea",    venue:"Monterrey" },
+  { id:55, date:"Jun 25", time:"4:00 PM",  group:"E", teamA:"Ecuador",        teamB:"Germany",        venue:"New York/NJ" },
+  { id:56, date:"Jun 25", time:"4:00 PM",  group:"E", teamA:"Curacao",        teamB:"Ivory Coast",    venue:"Philadelphia" },
+  { id:57, date:"Jun 25", time:"7:00 PM",  group:"F", teamA:"Japan",          teamB:"Sweden",         venue:"Dallas" },
+  { id:58, date:"Jun 25", time:"7:00 PM",  group:"F", teamA:"Tunisia",        teamB:"Netherlands",    venue:"Kansas City" },
+  { id:59, date:"Jun 25", time:"10:00 PM", group:"D", teamA:"Turkiye",        teamB:"USA",            venue:"Los Angeles" },
+  { id:60, date:"Jun 25", time:"10:00 PM", group:"D", teamA:"Paraguay",       teamB:"Australia",      venue:"San Francisco" },
+  { id:61, date:"Jun 26", time:"3:00 PM",  group:"I", teamA:"Norway",         teamB:"France",         venue:"Boston" },
+  { id:62, date:"Jun 26", time:"3:00 PM",  group:"I", teamA:"Senegal",        teamB:"Iraq",           venue:"Toronto" },
+  { id:63, date:"Jun 26", time:"8:00 PM",  group:"H", teamA:"Cape Verde",     teamB:"Saudi Arabia",   venue:"Houston" },
+  { id:64, date:"Jun 26", time:"8:00 PM",  group:"H", teamA:"Uruguay",        teamB:"Spain",          venue:"Guadalajara" },
+  { id:65, date:"Jun 26", time:"11:00 PM", group:"G", teamA:"Egypt",          teamB:"Iran",           venue:"Seattle" },
+  { id:66, date:"Jun 26", time:"11:00 PM", group:"G", teamA:"New Zealand",    teamB:"Belgium",        venue:"Vancouver" },
+  { id:67, date:"Jun 27", time:"5:00 PM",  group:"L", teamA:"Panama",         teamB:"England",        venue:"New York/NJ" },
+  { id:68, date:"Jun 27", time:"5:00 PM",  group:"L", teamA:"Croatia",        teamB:"Ghana",          venue:"Philadelphia" },
+  { id:69, date:"Jun 27", time:"7:30 PM",  group:"K", teamA:"Colombia",       teamB:"Portugal",       venue:"Miami" },
+  { id:70, date:"Jun 27", time:"7:30 PM",  group:"K", teamA:"DR Congo",       teamB:"Uzbekistan",     venue:"Atlanta" },
+  { id:71, date:"Jun 27", time:"10:00 PM", group:"J", teamA:"Algeria",        teamB:"Austria",        venue:"Kansas City" },
+  { id:72, date:"Jun 27", time:"10:00 PM", group:"J", teamA:"Jordan",         teamB:"Argentina",      venue:"Dallas" },
 ];
 
 const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5, redCard: 5 };
@@ -208,16 +208,16 @@ const DEFAULT_PAYOUT = { ptsPerUnit: 100, dollarsPerUnit: 20 };
 let SCORING = { ...DEFAULT_SCORING };
 let PAYOUT = { ...DEFAULT_PAYOUT };
 
-const FLAGS = {
-  "Mexico":"🇲🇽","South Africa":"🇿🇦","South Korea":"🇰🇷","Czechia":"🇨🇿","Canada":"🇨🇦",
-  "Bosnia & Herz.":"🇧🇦","USA":"🇺🇸","Paraguay":"🇵🇾","Qatar":"🇶🇦","Switzerland":"🇨🇭",
-  "Brazil":"🇧🇷","Morocco":"🇲🇦","Haiti":"🇭🇹","Scotland":"🏴󠁧󠁢󠁳󠁣󠁴󠁿","Australia":"🇦🇺","Turkiye":"🇹🇷",
-  "Germany":"🇩🇪","Curacao":"🇨🇼","Ivory Coast":"🇨🇮","Ecuador":"🇪🇨","Netherlands":"🇳🇱",
-  "Japan":"🇯🇵","Sweden":"🇸🇪","Tunisia":"🇹🇳","Spain":"🇪🇸","Cape Verde":"🇨🇻","Saudi Arabia":"🇸🇦",
-  "Uruguay":"🇺🇾","Belgium":"🇧🇪","Egypt":"🇪🇬","Iran":"🇮🇷","New Zealand":"🇳🇿","France":"🇫🇷",
-  "Senegal":"🇸🇳","Iraq":"🇮🇶","Norway":"🇳🇴","Argentina":"🇦🇷","Algeria":"🇩🇿","Austria":"🇦🇹",
-  "Jordan":"🇯🇴","Portugal":"🇵🇹","DR Congo":"🇨🇩","Uzbekistan":"🇺🇿","Colombia":"🇨🇴",
-  "England":"🏴󠁧󠁢󠁥󠁮󠁧󠁿","Croatia":"🇭🇷","Ghana":"🇬🇭","Panama":"🇵🇦"
+const FLAG_CODES = {
+  "Mexico":"mx","South Africa":"za","South Korea":"kr","Czechia":"cz","Canada":"ca",
+  "Bosnia & Herz.":"ba","USA":"us","Paraguay":"py","Qatar":"qa","Switzerland":"ch",
+  "Brazil":"br","Morocco":"ma","Haiti":"ht","Scotland":"gb-sct","Australia":"au","Turkiye":"tr",
+  "Germany":"de","Curacao":"cw","Ivory Coast":"ci","Ecuador":"ec","Netherlands":"nl",
+  "Japan":"jp","Sweden":"se","Tunisia":"tn","Spain":"es","Cape Verde":"cv","Saudi Arabia":"sa",
+  "Uruguay":"uy","Belgium":"be","Egypt":"eg","Iran":"ir","New Zealand":"nz","France":"fr",
+  "Senegal":"sn","Iraq":"iq","Norway":"no","Argentina":"ar","Algeria":"dz","Austria":"at",
+  "Jordan":"jo","Portugal":"pt","DR Congo":"cd","Uzbekistan":"uz","Colombia":"co",
+  "England":"gb-eng","Croatia":"hr","Ghana":"gh","Panama":"pa"
 };
 const GROUP_COLORS = { A:"#e74c3c",B:"#e67e22",C:"#f1c40f",D:"#2ecc71",E:"#1abc9c",F:"#3498db",G:"#9b59b6",H:"#e91e63",I:"#00bcd4",J:"#ff5722",K:"#8bc34a",L:"#607d8b" };
 
@@ -351,7 +351,12 @@ function totals() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
-function flag(team) { return FLAGS[team] || "🏳️"; }
+function flag(team) {
+  const code = FLAG_CODES[team];
+  if (!code) return '<span style="font-size:24px">🏳️</span>';
+  return `<img src="https://flagcdn.com/w80/${code}.png" alt="${esc(team)}" loading="lazy"
+    style="width:40px;height:auto;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.4)">`;
+}
 function ptsClass(p) { return p >= 40 ? "high" : p >= 20 ? "mid" : ""; }
 
 // ── Actions (global, called from onclick) ─────────────────────────────────────
@@ -645,7 +650,7 @@ function renderCard(m) {
   return `
     <div class="card ${isLocked?'locked':''}">
       <div class="card-header">
-        <span class="match-meta">#${m.id} · ${esc(m.date)} · ${esc(m.venue)}</span>
+        <span class="match-meta">#${m.id} · ${esc(m.date)}${m.time ? ' · <strong style="color:rgba(255,255,255,0.7)">' + esc(m.time) + ' ET</strong>' : ''} · ${esc(m.venue)}</span>
         <span class="group-badge" style="background:${GROUP_COLORS[m.group]||'#555'}">Group ${m.group}</span>
       </div>
       <div class="teams-row">
