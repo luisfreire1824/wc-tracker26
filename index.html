@@ -205,8 +205,15 @@ const GROUP_MATCHES = [
 
 const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5, redCard: 5 };
 const DEFAULT_PAYOUT = { ptsPerUnit: 100, dollarsPerUnit: 20 };
+// Stage point multipliers (locked-in decision: group 1x, R32-Semi 2x; 3rd-place & Final default 2x, adjustable)
+const DEFAULT_MULTIPLIERS = { "Group": 1, "Round of 32": 2, "Round of 16": 2, "Quarter-Final": 2, "Semi-Final": 2, "Third Place": 2, "Final": 2 };
 let SCORING = { ...DEFAULT_SCORING };
 let PAYOUT = { ...DEFAULT_PAYOUT };
+let MULTIPLIERS = { ...DEFAULT_MULTIPLIERS };
+
+function stageMultiplier(stage) {
+  return MULTIPLIERS[stage] != null ? MULTIPLIERS[stage] : 1;
+}
 
 const FLAG_CODES = {
   "Mexico":"mx","South Africa":"za","South Korea":"kr","Czechia":"cz","Canada":"ca",
@@ -228,6 +235,7 @@ let state = {
   tab: "upcoming",
   predictions: {},  // matchId -> { luis: {scoreA, scoreB, draw, penalty, locked}, bibi: {...} }
   results: {},      // matchId -> { scoreA, scoreB, winner, draw, penalty, entered }
+  knockout: { matches: [], r32Assignments: {} }, // r32Assignments: { "101_b": "Ecuador", ... }
 };
 // Per-card UI drafts (not persisted)
 let drafts = {};      // matchId -> prediction draft
@@ -247,6 +255,8 @@ function loadLocalCache() {
       state.user = saved.user || null;
       if (saved.scoring) SCORING = { ...DEFAULT_SCORING, ...saved.scoring };
       if (saved.payout) PAYOUT = { ...DEFAULT_PAYOUT, ...saved.payout };
+      if (saved.multipliers) MULTIPLIERS = { ...DEFAULT_MULTIPLIERS, ...saved.multipliers };
+      if (saved.knockout) state.knockout = { matches: [], r32Assignments: {}, ...saved.knockout };
     }
   } catch (e) { console.error("local load failed", e); }
 }
@@ -259,6 +269,8 @@ function saveLocalCache() {
       user: state.user,
       scoring: SCORING,
       payout: PAYOUT,
+      multipliers: MULTIPLIERS,
+      knockout: { r32Assignments: state.knockout.r32Assignments || {} },
     }));
   } catch (e) { console.error("local cache failed", e); }
 }
@@ -285,6 +297,7 @@ function startFirestoreSync() {
         const data = JSON.parse(doc.data().json || "{}");
         state.results = data;
         saveLocalCache();
+        refreshKnockout();
         render();
       } catch (e) { console.error("results parse failed", e); }
     }
@@ -297,11 +310,36 @@ function startFirestoreSync() {
         const data = JSON.parse(doc.data().json || "{}");
         SCORING = { ...DEFAULT_SCORING, scoreA: data.scoreA ?? 15, scoreB: data.scoreB ?? 15, winner: data.winner ?? 10, draw: data.draw ?? 5, penalty: data.penalty ?? 5, redCard: data.redCard ?? 5 };
         PAYOUT = { ptsPerUnit: data.ptsPerUnit ?? 100, dollarsPerUnit: data.dollarsPerUnit ?? 20 };
+        if (data.multipliers) MULTIPLIERS = { ...DEFAULT_MULTIPLIERS, ...data.multipliers };
         saveLocalCache();
+        refreshKnockout();
         render();
       } catch (e) { console.error("settings parse failed", e); }
     }
   }, err => { fsConnected = false; console.error("settings listener error", err); render(); });
+
+  db.collection("tracker").doc("knockout").onSnapshot(doc => {
+    fsConnected = true;
+    if (doc.exists) {
+      try {
+        const data = JSON.parse(doc.data().json || "{}");
+        state.knockout.r32Assignments = data.r32Assignments || {};
+        saveLocalCache();
+        refreshKnockout();
+        render();
+      } catch (e) { console.error("knockout parse failed", e); }
+    }
+  }, err => { console.error("knockout listener error", err); });
+}
+
+// Rebuild knockout matches from current standings + saved third-place assignments
+function refreshKnockout() {
+  if (!groupStageComplete()) {
+    state.knockout.matches = [];
+    return;
+  }
+  const built = buildR32();
+  state.knockout.matches = built.matches;
 }
 
 async function pushDoc(docName, obj) {
@@ -332,8 +370,8 @@ function validateMatch(id) {
   const diffs = [];
   if (String(entered.scoreA) !== String(off.scoreA)) diffs.push({ field: "Score Team A", entered: entered.scoreA, official: off.scoreA });
   if (String(entered.scoreB) !== String(off.scoreB)) diffs.push({ field: "Score Team B", entered: entered.scoreB, official: off.scoreB });
-  if (off.penalty !== undefined && entered.penalty !== off.penalty) diffs.push({ field: "Penalty", entered: entered.penalty, official: off.penalty });
-  if (off.redCard !== undefined && (entered.redCard || "") !== off.redCard) diffs.push({ field: "Red Card", entered: entered.redCard || "(none)", official: off.redCard });
+  if (off.penalty != null && off.penalty !== "" && entered.penalty !== off.penalty) diffs.push({ field: "Penalty", entered: entered.penalty, official: off.penalty });
+  if (off.redCard != null && off.redCard !== "" && (entered.redCard || "") !== off.redCard) diffs.push({ field: "Red Card", entered: entered.redCard || "(none)", official: off.redCard });
   return { ok: diffs.length === 0, diffs };
 }
 
@@ -346,7 +384,7 @@ function countFlagged() {
 }
 
 // ── Scoring ───────────────────────────────────────────────────────────────────
-function calcPoints(pred, result) {
+function calcPoints(pred, result, stage) {
   if (!pred || !pred.locked || !result || !result.entered) return null;
   let pts = 0;
   if (String(pred.scoreA) === String(result.scoreA)) pts += SCORING.scoreA;
@@ -362,14 +400,150 @@ function calcPoints(pred, result) {
   if (pred.redCard !== undefined && pred.redCard !== "" && result.redCard !== undefined && result.redCard !== "") {
     if (pred.redCard === result.redCard) pts += (SCORING.redCard || 0);
   }
-  return pts;
+  // Apply stage multiplier (group = 1x, knockouts weighted)
+  const mult = stageMultiplier(stage || "Group");
+  return pts * mult;
+}
+
+// All matches = group stage + any knockout matches created in state.knockout
+function allMatches() {
+  const ko = (state.knockout && state.knockout.matches) ? state.knockout.matches : [];
+  return GROUP_MATCHES.concat(ko);
+}
+
+// Stage for a given match id
+function matchStage(m) {
+  return m.stage || "Group";
+}
+
+// ── Group standings computation ───────────────────────────────────────────────
+// Returns { A: [team objects sorted], B: [...], ... } using entered group results.
+// Each team: { team, played, won, drawn, lost, gf, ga, gd, points, group }
+function computeGroupStandings() {
+  const groups = {};
+  GROUP_MATCHES.forEach(m => {
+    [m.teamA, m.teamB].forEach(team => {
+      if (!groups[m.group]) groups[m.group] = {};
+      if (!groups[m.group][team]) groups[m.group][team] = { team, group: m.group, played:0, won:0, drawn:0, lost:0, gf:0, ga:0, gd:0, points:0 };
+    });
+    const r = state.results[m.id];
+    if (!r || !r.entered) return;
+    const a = groups[m.group][m.teamA], b = groups[m.group][m.teamB];
+    const sa = Number(r.scoreA), sb = Number(r.scoreB);
+    a.played++; b.played++;
+    a.gf += sa; a.ga += sb; b.gf += sb; b.ga += sa;
+    if (sa > sb) { a.won++; a.points += 3; b.lost++; }
+    else if (sb > sa) { b.won++; b.points += 3; a.lost++; }
+    else { a.drawn++; b.drawn++; a.points++; b.points++; }
+  });
+  // sort each group
+  const sorted = {};
+  Object.keys(groups).sort().forEach(g => {
+    sorted[g] = Object.values(groups[g]).map(t => ({ ...t, gd: t.gf - t.ga }))
+      .sort(sortTeams);
+  });
+  return sorted;
+}
+
+// Tiebreak: points, then GD, then GF (FIFA also uses head-to-head/conduct, omitted here)
+function sortTeams(x, y) {
+  if (y.points !== x.points) return y.points - x.points;
+  if (y.gd !== x.gd) return y.gd - x.gd;
+  if (y.gf !== x.gf) return y.gf - x.gf;
+  return x.team.localeCompare(y.team);
+}
+
+// Are all 48 group matches entered? (bracket only auto-builds when group stage complete)
+function groupStageComplete() {
+  return GROUP_MATCHES.every(m => (state.results[m.id]||{}).entered);
+}
+
+// Count entered group matches (for progress display)
+function groupMatchesEntered() {
+  return GROUP_MATCHES.filter(m => (state.results[m.id]||{}).entered).length;
+}
+
+// Ranked third-place teams across all 12 groups (best first)
+function rankedThirdPlace(standings) {
+  const thirds = [];
+  Object.keys(standings).forEach(g => {
+    if (standings[g][2]) thirds.push(standings[g][2]);
+  });
+  return thirds.sort(sortTeams);
+}
+
+// ── Round of 32 bracket template ──────────────────────────────────────────────
+// Each slot defines how its two teams are determined. "W"=winner,"R"=runner-up of a group.
+// "3RD" slots need a third-place team assigned (user confirms these per FIFA matrix).
+// Source: official 2026 R32 schedule. Dates/venues/times included.
+const R32_TEMPLATE = [
+  { id:101, match:73, date:"Jun 28", time:"3:00 PM",  venue:"Los Angeles",   a:{type:"R",group:"A"}, b:{type:"R",group:"B"} },
+  { id:102, match:74, date:"Jun 29", time:"4:30 PM",  venue:"Boston",        a:{type:"W",group:"E"}, b:{type:"3RD"} },
+  { id:103, match:75, date:"Jun 29", time:"9:00 PM",  venue:"Monterrey",     a:{type:"W",group:"F"}, b:{type:"R",group:"C"} },
+  { id:104, match:76, date:"Jun 29", time:"1:00 PM",  venue:"Houston",       a:{type:"W",group:"C"}, b:{type:"R",group:"F"} },
+  { id:105, match:77, date:"Jun 30", time:"5:00 PM",  venue:"New York/NJ",   a:{type:"W",group:"I"}, b:{type:"3RD"} },
+  { id:106, match:78, date:"Jun 30", time:"1:00 PM",  venue:"Dallas",        a:{type:"R",group:"E"}, b:{type:"R",group:"I"} },
+  { id:107, match:79, date:"Jun 30", time:"9:00 PM",  venue:"Mexico City",   a:{type:"W",group:"A"}, b:{type:"3RD"} },
+  { id:108, match:80, date:"Jul 1",  time:"12:00 PM", venue:"Atlanta",       a:{type:"W",group:"L"}, b:{type:"3RD"} },
+  { id:109, match:81, date:"Jul 1",  time:"8:00 PM",  venue:"San Francisco", a:{type:"W",group:"D"}, b:{type:"3RD"} },
+  { id:110, match:82, date:"Jul 1",  time:"4:00 PM",  venue:"Seattle",       a:{type:"W",group:"G"}, b:{type:"3RD"} },
+  { id:111, match:83, date:"Jul 2",  time:"7:00 PM",  venue:"Toronto",       a:{type:"R",group:"K"}, b:{type:"R",group:"L"} },
+  { id:112, match:84, date:"Jul 2",  time:"3:00 PM",  venue:"Los Angeles",   a:{type:"W",group:"H"}, b:{type:"R",group:"J"} },
+  { id:113, match:85, date:"Jul 2",  time:"11:00 PM", venue:"Vancouver",     a:{type:"W",group:"B"}, b:{type:"3RD"} },
+  { id:114, match:86, date:"Jul 3",  time:"6:00 PM",  venue:"Miami",         a:{type:"W",group:"J"}, b:{type:"R",group:"H"} },
+  { id:115, match:87, date:"Jul 3",  time:"9:30 PM",  venue:"Kansas City",   a:{type:"W",group:"K"}, b:{type:"3RD"} },
+  { id:116, match:88, date:"Jul 3",  time:"2:00 PM",  venue:"Dallas",        a:{type:"R",group:"D"}, b:{type:"R",group:"G"} },
+];
+
+// Resolve a slot side to a team name from standings (null if not yet determined)
+function resolveSlot(side, standings) {
+  if (!side) return null;
+  if (side.type === "W") return standings[side.group]?.[0]?.team || null;
+  if (side.type === "R") return standings[side.group]?.[1]?.team || null;
+  if (side.type === "3RD") return side.assigned || null; // user-assigned third place
+  return null;
+}
+
+// Build the Round of 32 matches from current standings.
+// Returns { matches: [...], thirdSlotsNeeded: int, thirdAssigned: int }
+function buildR32() {
+  const standings = computeGroupStandings();
+  const matches = [];
+  const existing = (state.knockout && state.knockout.r32Assignments) || {};
+  let thirdSlots = 0, thirdAssigned = 0;
+
+  R32_TEMPLATE.forEach(slot => {
+    const aSide = { ...slot.a };
+    const bSide = { ...slot.b };
+    // restore any saved third-place assignments
+    if (aSide.type === "3RD") { thirdSlots++; aSide.assigned = existing[slot.id + "_a"] || null; if (aSide.assigned) thirdAssigned++; }
+    if (bSide.type === "3RD") { thirdSlots++; bSide.assigned = existing[slot.id + "_b"] || null; if (bSide.assigned) thirdAssigned++; }
+    const teamA = resolveSlot(aSide, standings);
+    const teamB = resolveSlot(bSide, standings);
+    matches.push({
+      id: slot.id, stage: "Round of 32", round: "R32",
+      matchNo: slot.match, date: slot.date, time: slot.time, venue: slot.venue,
+      teamA: teamA || labelFor(aSide), teamB: teamB || labelFor(bSide),
+      teamAResolved: !!teamA, teamBResolved: !!teamB,
+      slotA: aSide, slotB: bSide,
+    });
+  });
+  return { matches, thirdSlots, thirdAssigned };
+}
+
+// Human label for an unresolved slot side
+function labelFor(side) {
+  if (side.type === "W") return "Winner " + side.group;
+  if (side.type === "R") return "Runner-up " + side.group;
+  if (side.type === "3RD") return "3rd Place (TBD)";
+  return "TBD";
 }
 
 function totals() {
   let luis = 0, bibi = 0;
-  GROUP_MATCHES.forEach(m => {
-    const lp = calcPoints((state.predictions[m.id]||{}).luis, state.results[m.id]);
-    const bp = calcPoints((state.predictions[m.id]||{}).bibi, state.results[m.id]);
+  allMatches().forEach(m => {
+    const lp = calcPoints((state.predictions[m.id]||{}).luis, state.results[m.id], matchStage(m));
+    const bp = calcPoints((state.predictions[m.id]||{}).bibi, state.results[m.id], matchStage(m));
     if (lp !== null) luis += lp;
     if (bp !== null) bibi += bp;
   });
@@ -422,7 +596,7 @@ window.updateSetting = async function(group, field, value) {
   else PAYOUT[field] = num;
   saveLocalCache();
   render();
-  await pushDoc("settings", { ...SCORING, ...PAYOUT });
+  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
 };
 window.resetSettings = async function() {
   if (!confirm("Reset all point values and payout to defaults?")) return;
@@ -430,7 +604,7 @@ window.resetSettings = async function() {
   PAYOUT = { ...DEFAULT_PAYOUT };
   saveLocalCache();
   render();
-  await pushDoc("settings", { ...SCORING, ...PAYOUT });
+  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
 };
 
 window.updateDraft = function(id, field, value) {
@@ -503,14 +677,21 @@ window.applySuggestion = async function(id) {
   if (!confirm("Fill in the suggested result " + off.scoreA + "–" + off.scoreB + "? You can still edit before it scores.")) return;
   const draw = String(off.scoreA) === String(off.scoreB) ? "Y" : "N";
   const winner = draw === "Y" ? "" : (Number(off.scoreA) > Number(off.scoreB) ? "A" : "B");
+  const penaltyKnown = off.penalty != null && off.penalty !== "";
+  const redKnown = off.redCard != null && off.redCard !== "";
   state.results[id] = {
     scoreA: off.scoreA, scoreB: off.scoreB,
-    penalty: off.penalty || "N", redCard: off.redCard || "",
-    draw, winner, entered: true, enteredBy: state.user + " (suggested)"
+    penalty: penaltyKnown ? off.penalty : "",
+    redCard: redKnown ? off.redCard : "",
+    draw, winner, entered: true, enteredBy: state.user + " (suggested)",
+    needsDetail: (!penaltyKnown || !redKnown)
   };
   saveLocalCache();
   render();
   await pushDoc("results", state.results);
+  if (!penaltyKnown || !redKnown) {
+    alert("⚠️ Scores filled in, but penalty/red-card weren't in the data. Tap the result to set those before trusting the points.");
+  }
 };
 
 // Overwrite an entered (flagged) result with the official values
@@ -532,6 +713,29 @@ window.applyOfficialFix = async function(id) {
 
 window.setCompletedSort = function(s) { completedSort = s; render(); };
 window.setCompletedFilter = function(v) { completedFilter = v; render(); };
+
+window.updateMultiplier = async function(stage, value) {
+  const num = Number(value);
+  if (isNaN(num) || num < 0) return;
+  MULTIPLIERS[stage] = num;
+  saveLocalCache();
+  refreshKnockout();
+  render();
+  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
+};
+
+// Assign a third-place team to an R32 slot side ("101_a" / "101_b")
+window.assignThirdPlace = async function(slotKey, teamName) {
+  if (!teamName) {
+    delete state.knockout.r32Assignments[slotKey];
+  } else {
+    state.knockout.r32Assignments[slotKey] = teamName;
+  }
+  saveLocalCache();
+  refreshKnockout();
+  render();
+  await pushDoc("knockout", { r32Assignments: state.knockout.r32Assignments });
+};
 
 window.exportData = function() {
   const data = JSON.stringify({ predictions: state.predictions, results: state.results, scoring: SCORING, payout: PAYOUT }, null, 2);
@@ -571,7 +775,7 @@ window.importData = function() {
         render();
         pushDoc("predictions", state.predictions);
         pushDoc("results", state.results);
-        pushDoc("settings", { ...SCORING, ...PAYOUT });
+        pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
         alert("✓ Imported and synced");
       } catch (err) { alert("Import failed: invalid file"); }
     };
@@ -586,8 +790,9 @@ function render() {
   if (!state.user) { app.innerHTML = renderUserSelect(); return; }
 
   const t = totals();
-  const upcoming = GROUP_MATCHES.filter(m => !(state.results[m.id]||{}).entered);
-  const completed = GROUP_MATCHES.filter(m => (state.results[m.id]||{}).entered);
+  const koResolved = (state.knockout.matches||[]).filter(m => m.teamAResolved && m.teamBResolved);
+  const upcoming = GROUP_MATCHES.concat(koResolved).filter(m => !(state.results[m.id]||{}).entered);
+  const completed = GROUP_MATCHES.concat(koResolved).filter(m => (state.results[m.id]||{}).entered);
   const flaggedCount = countFlagged();
 
   let bodyHtml = "";
@@ -599,6 +804,8 @@ function render() {
     bodyHtml = renderCompleted(completed);
   } else if (state.tab === "settings") {
     bodyHtml = renderSettings();
+  } else if (state.tab === "bracket") {
+    bodyHtml = renderBracket();
   } else if (state.tab === "stats") {
     bodyHtml = renderStats();
   } else {
@@ -621,6 +828,7 @@ function render() {
         <button class="tab ${state.tab==='upcoming'?'active':''}" onclick="setTab('upcoming')">Upcoming (${upcoming.length})</button>
         <button class="tab ${state.tab==='completed'?'active':''}" onclick="setTab('completed')">Completed (${completed.length})${flaggedCount>0?' <span style="background:#e74c3c;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px">'+flaggedCount+'</span>':''}</button>
         <button class="tab ${state.tab==='standings'?'active':''}" onclick="setTab('standings')">Standings</button>
+        <button class="tab ${state.tab==='bracket'?'active':''}" onclick="setTab('bracket')">Bracket</button>
         <button class="tab ${state.tab==='stats'?'active':''}" onclick="setTab('stats')">Stats</button>
         <button class="tab ${state.tab==='settings'?'active':''}" onclick="setTab('settings')">⚙️</button>
       </div>
@@ -666,8 +874,8 @@ function renderCard(m) {
   const d = drafts[m.id] || { scoreA:"", scoreB:"", draw:"", penalty:"", redCard:"" };
   const rd = resultDrafts[m.id] || { scoreA:"", scoreB:"", penalty:"", redCard:"" };
 
-  const luisPts = calcPoints(pred.luis, result);
-  const bibiPts = calcPoints(pred.bibi, result);
+  const luisPts = calcPoints(pred.luis, result, matchStage(m));
+  const bibiPts = calcPoints(pred.bibi, result, matchStage(m));
   const myPts = userKey === "luis" ? luisPts : bibiPts;
 
   let predHtml = "";
@@ -809,7 +1017,7 @@ function renderCard(m) {
     <div class="card ${isLocked?'locked':''}">
       <div class="card-header">
         <span class="match-meta">#${m.id} · ${esc(m.date)}${m.time ? ' · <strong style="color:rgba(255,255,255,0.7)">' + esc(m.time) + ' ET</strong>' : ''} · ${esc(m.venue)}</span>
-        <span class="group-badge" style="background:${GROUP_COLORS[m.group]||'#555'}">Group ${m.group}</span>
+        <span class="group-badge" style="background:${m.group ? (GROUP_COLORS[m.group]||'#555') : '#34495e'}">${m.group ? 'Group '+m.group : esc(m.round||m.stage||'KO')}</span>
       </div>
       <div class="teams-row">
         <div class="team"><div class="team-flag">${flag(m.teamA)}</div><div class="team-name">${esc(m.teamA)}</div></div>
@@ -910,6 +1118,127 @@ function renderCompleted(completed) {
   return controls + cards;
 }
 
+// ── Bracket tab ───────────────────────────────────────────────────────────────
+function renderBracket() {
+  const entered = groupMatchesEntered();
+  const complete = groupStageComplete();
+
+  // Not done with groups yet — show progress + standings preview
+  if (!complete) {
+    const standings = computeGroupStandings();
+    return `
+      <div class="standings-card" style="text-align:center">
+        <div style="font-size:40px;margin-bottom:8px">🗺️</div>
+        <div style="font-size:16px;font-weight:800;margin-bottom:6px">Knockout bracket locked</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.5);line-height:1.5">
+          The Round of 32 unlocks once all 48 group matches have results entered.<br>
+          <strong style="color:#f9c22e">${entered} / 48</strong> group matches entered.
+        </div>
+        <div class="progress-bar" style="margin-top:12px"><div class="progress-fill" style="width:${(entered/48)*100}%"></div></div>
+      </div>
+      <div class="section-title">Live Group Standings</div>
+      ${renderStandingsTables(standings)}
+      <div style="font-size:11px;color:rgba(255,255,255,0.3);text-align:center;margin-top:8px;line-height:1.5">
+        Standings update automatically as results come in. Tiebreakers use points → goal difference → goals scored.
+      </div>
+    `;
+  }
+
+  // Groups complete — build bracket
+  const standings = computeGroupStandings();
+  const built = buildR32();
+  const thirds = rankedThirdPlace(standings);
+  const top8Thirds = thirds.slice(0, 8);
+  const thirdNames = top8Thirds.map(t => t.team);
+
+  // Which third-place slots still need assignment?
+  const needsAssign = built.thirdSlots - built.thirdAssigned;
+
+  let assignHtml = "";
+  if (needsAssign > 0) {
+    // Build dropdowns for each 3RD slot
+    const slotInputs = [];
+    R32_TEMPLATE.forEach(slot => {
+      ["a","b"].forEach(side => {
+        if (slot[side].type === "3RD") {
+          const key = slot.id + "_" + side;
+          const assigned = state.knockout.r32Assignments[key] || "";
+          const otherSideTeam = side === "a" ? built.matches.find(m=>m.id===slot.id)?.teamB : built.matches.find(m=>m.id===slot.id)?.teamA;
+          slotInputs.push(`
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+              <div style="font-size:12px;color:rgba(255,255,255,0.65)">Match ${slot.match}: vs ${esc(otherSideTeam||"?")}</div>
+              <select onchange="assignThirdPlace('${key}',this.value)" style="height:34px;border-radius:6px;border:1px solid rgba(243,156,18,0.4);background:#12213a;color:#f9c22e;font-size:12px;font-family:inherit;padding:0 6px;max-width:150px">
+                <option value="">— pick 3rd —</option>
+                ${thirdNames.map(n => `<option value="${esc(n)}" ${assigned===n?'selected':''}>${esc(n)}</option>`).join("")}
+              </select>
+            </div>`);
+        }
+      });
+    });
+    assignHtml = `
+      <div class="standings-card" style="border-color:rgba(243,156,18,0.3)">
+        <div style="font-size:13px;font-weight:700;color:#f9c22e;margin-bottom:4px">⚠️ Confirm third-place teams (${built.thirdAssigned}/${built.thirdSlots})</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:10px;line-height:1.5">
+          The 8 best third-place teams qualify. Assign each to its bracket slot per FIFA's official placement. The 8 qualifiers (by rank) are:
+          <div style="margin-top:6px;color:#2ecc71;font-weight:600">${thirdNames.map(esc).join(", ")}</div>
+        </div>
+        ${slotInputs.join("")}
+      </div>`;
+  }
+
+  // Render R32 matches (resolved ones get full prediction cards; unresolved show as pending)
+  const matchCards = built.matches.map(m => {
+    if (m.teamAResolved && m.teamBResolved) {
+      return renderCard(m);
+    }
+    return `
+      <div class="card" style="opacity:0.6">
+        <div class="card-header">
+          <span class="match-meta">#${m.matchNo} · ${esc(m.date)} · ${esc(m.time)} ET · ${esc(m.venue)}</span>
+          <span class="group-badge" style="background:#34495e">R32</span>
+        </div>
+        <div style="padding:14px;text-align:center;font-size:14px;color:rgba(255,255,255,0.6)">
+          ${esc(m.teamA)} <span style="color:rgba(255,255,255,0.3)">vs</span> ${esc(m.teamB)}
+          <div style="font-size:11px;color:rgba(243,156,18,0.8);margin-top:6px">Assign teams above to start predicting</div>
+        </div>
+      </div>`;
+  });
+
+  return `
+    <div class="section-title">Round of 32 ${MULTIPLIERS["Round of 32"]?`· ${MULTIPLIERS["Round of 32"]}× points`:""}</div>
+    ${assignHtml}
+    ${matchCards.join("")}
+    <div style="font-size:11px;color:rgba(255,255,255,0.3);text-align:center;margin-top:8px;line-height:1.5">
+      Winners & runners-up auto-filled from standings. Later rounds (R16 onward) will generate as R32 results come in — coming next.
+    </div>
+  `;
+}
+
+// Render compact group standings tables
+function renderStandingsTables(standings) {
+  return Object.keys(standings).map(g => {
+    const rows = standings[g].map((t, i) => {
+      const qual = i < 2 ? "#2ecc71" : (i === 2 ? "#f9c22e" : "rgba(255,255,255,0.3)");
+      return `
+        <div style="display:flex;align-items:center;gap:8px;padding:5px 0;font-size:12px;border-bottom:1px solid rgba(255,255,255,0.04)">
+          <span style="color:${qual};font-weight:700;width:14px">${i+1}</span>
+          <span style="flex:1;color:rgba(255,255,255,0.85)">${esc(t.team)}</span>
+          <span style="color:rgba(255,255,255,0.4);width:24px;text-align:center">${t.played}</span>
+          <span style="color:rgba(255,255,255,0.4);width:30px;text-align:center">${t.gd>0?'+':''}${t.gd}</span>
+          <span style="color:#fff;font-weight:700;width:24px;text-align:center">${t.points}</span>
+        </div>`;
+    }).join("");
+    return `
+      <div class="standings-card" style="padding:12px 14px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span class="group-badge" style="background:#34495e">Group ${g}</span>
+          <span style="font-size:9px;color:rgba(255,255,255,0.3);margin-left:auto">P · GD · PTS</span>
+        </div>
+        ${rows}
+      </div>`;
+  }).join("");
+}
+
 // ── Analytics ─────────────────────────────────────────────────────────────────
 function computeStats() {
   const players = { luis: emptyPlayerStats(), bibi: emptyPlayerStats() };
@@ -917,11 +1246,12 @@ function computeStats() {
   let totalGoalsActual = 0, scoredMatches = 0;
   let biggestSwing = { diff: 0, match: null, winner: null };
 
-  GROUP_MATCHES.forEach(m => {
+  allMatches().forEach(m => {
     const result = state.results[m.id];
     if (!result || !result.entered) return;
     const pred = state.predictions[m.id] || {};
     const pts = {};
+    const mult = stageMultiplier(matchStage(m));
 
     ["luis","bibi"].forEach(k => {
       const p = pred[k];
@@ -930,7 +1260,7 @@ function computeStats() {
       s.predicted++;
       let matchPts = 0;
 
-      // Exact scores
+      // Exact scores (category breakdown tracks BASE points; matchPts tracks weighted)
       const hitA = String(p.scoreA) === String(result.scoreA);
       const hitB = String(p.scoreB) === String(result.scoreB);
       if (hitA) { s.cat.exactA += SCORING.scoreA; s.hits.exactA++; matchPts += SCORING.scoreA; }
@@ -956,10 +1286,11 @@ function computeStats() {
         if (p.redCard === result.redCard) { s.cat.redCard += (SCORING.redCard || 0); s.hits.redCard++; matchPts += (SCORING.redCard || 0); }
       }
 
-      s.total += matchPts;
-      if (matchPts > s.bestMatch.pts) s.bestMatch = { pts: matchPts, match: m };
+      const weighted = matchPts * mult;
+      s.total += weighted;
+      if (weighted > s.bestMatch.pts) s.bestMatch = { pts: weighted, match: m };
       if (matchPts === 0) s.blanks++;
-      pts[k] = matchPts;
+      pts[k] = weighted;
     });
 
     // Head-to-head per match
@@ -1123,6 +1454,19 @@ function renderSettings() {
         <span style="color:#2ecc71;font-weight:800;font-size:16px">${maxPts}</span>
       </div>
     </div>
+    <div class="section-title">Stage Multipliers</div>
+    <div class="standings-card">
+      ${["Round of 32","Round of 16","Quarter-Final","Semi-Final","Third Place","Final"].map(stage =>
+        `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+          <div style="font-size:13px;font-weight:600">${stage}</div>
+          <input type="number" inputmode="decimal" min="0" step="0.5" value="${MULTIPLIERS[stage] ?? 2}"
+            style="width:72px;height:42px;border-radius:8px;border:1.5px solid rgba(52,152,219,0.4);background:rgba(52,152,219,0.07);color:#5dade2;font-size:18px;font-weight:700;text-align:center;outline:none;font-family:inherit"
+            onchange="updateMultiplier('${stage}',this.value)">
+        </div>`).join("")}
+      <div style="font-size:11px;color:rgba(255,255,255,0.4);padding-top:12px;line-height:1.5">
+        Group stage is always 1×. Knockout points = base category points × this multiplier. (Locked-in plan: R32–Semi at 2×; 3rd-place & Final default 2×, decide later.)
+      </div>
+    </div>
     <div class="section-title">Payout</div>
     <div class="standings-card">
       ${row("Points per unit", "payout", "ptsPerUnit", PAYOUT.ptsPerUnit, "How many points make one payout unit")}
@@ -1142,6 +1486,7 @@ function renderSettings() {
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadLocalCache();
+refreshKnockout();
 render();
 startFirestoreSync();
 </script>
