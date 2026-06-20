@@ -233,6 +233,9 @@ let state = {
 let drafts = {};      // matchId -> prediction draft
 let resultDrafts = {}; // matchId -> result draft
 let resultOpen = {};   // matchId -> bool
+let officialResults = null;   // { matchId: {scoreA, scoreB, penalty, redCard} } from uploaded file
+let completedSort = "recent"; // "recent" | "match"
+let completedFilter = "";     // team name filter ("" = all)
 
 function loadLocalCache() {
   try {
@@ -318,6 +321,30 @@ function saveState() {
   return true;
 }
 
+// ── Validation ────────────────────────────────────────────────────────────────
+// Compares an entered result against the uploaded official data.
+// Returns null if no official data for this match, else { match, diffs:[], ok:bool }
+function validateMatch(id) {
+  if (!officialResults || !officialResults[id]) return null;
+  const entered = state.results[id];
+  if (!entered || !entered.entered) return null;
+  const off = officialResults[id];
+  const diffs = [];
+  if (String(entered.scoreA) !== String(off.scoreA)) diffs.push({ field: "Score Team A", entered: entered.scoreA, official: off.scoreA });
+  if (String(entered.scoreB) !== String(off.scoreB)) diffs.push({ field: "Score Team B", entered: entered.scoreB, official: off.scoreB });
+  if (off.penalty !== undefined && entered.penalty !== off.penalty) diffs.push({ field: "Penalty", entered: entered.penalty, official: off.penalty });
+  if (off.redCard !== undefined && (entered.redCard || "") !== off.redCard) diffs.push({ field: "Red Card", entered: entered.redCard || "(none)", official: off.redCard });
+  return { ok: diffs.length === 0, diffs };
+}
+
+// Count how many completed matches have mismatches against uploaded data
+function countFlagged() {
+  if (!officialResults) return 0;
+  let n = 0;
+  GROUP_MATCHES.forEach(m => { const v = validateMatch(m.id); if (v && !v.ok) n++; });
+  return n;
+}
+
 // ── Scoring ───────────────────────────────────────────────────────────────────
 function calcPoints(pred, result) {
   if (!pred || !pred.locked || !result || !result.entered) return null;
@@ -351,6 +378,31 @@ function totals() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function esc(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+// Parse "Jun 14" + year 2026 into a Date (kickoffs are 2026)
+function matchDate(m) {
+  const months = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
+  const parts = m.date.split(" ");
+  const mo = months[parts[0]];
+  const day = parseInt(parts[1], 10);
+  if (mo === undefined || isNaN(day)) return null;
+  return new Date(2026, mo, day);
+}
+
+// Has at least one full day passed since the match date?
+function dayHasPassed(m) {
+  const d = matchDate(m);
+  if (!d) return false;
+  const now = new Date();
+  const dayAfter = new Date(d.getTime());
+  dayAfter.setDate(dayAfter.getDate() + 1);
+  return now >= dayAfter;
+}
+
+// Is there official data available to suggest for this match?
+function hasSuggestion(id) {
+  return !!(officialResults && officialResults[id]);
+}
 function flag(team) {
   const code = FLAG_CODES[team];
   if (!code) return '<span style="font-size:24px">🏳️</span>';
@@ -416,6 +468,71 @@ window.submitResult = async function(id) {
   render();
   await pushDoc("results", state.results);
 };
+window.uploadOfficialResults = function() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json";
+  input.onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        const r = data.results || data;
+        if (typeof r !== "object") throw new Error("bad shape");
+        officialResults = r;
+        const matchCount = Object.keys(r).length;
+        const flagged = countFlagged();
+        render();
+        alert("✓ Loaded official data for " + matchCount + " match(es).\n" +
+          (flagged > 0 ? "⚠️ " + flagged + " completed match(es) need attention — see the Completed tab." : "All entered results match so far."));
+      } catch (err) {
+        alert("Couldn't read that file. Make sure it's the results JSON with a 'results' object.");
+      }
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+};
+
+// Apply official data as the result for an in-progress match (suggestion fill)
+window.applySuggestion = async function(id) {
+  if (!hasSuggestion(id)) return;
+  const off = officialResults[id];
+  if (!confirm("Fill in the suggested result " + off.scoreA + "–" + off.scoreB + "? You can still edit before it scores.")) return;
+  const draw = String(off.scoreA) === String(off.scoreB) ? "Y" : "N";
+  const winner = draw === "Y" ? "" : (Number(off.scoreA) > Number(off.scoreB) ? "A" : "B");
+  state.results[id] = {
+    scoreA: off.scoreA, scoreB: off.scoreB,
+    penalty: off.penalty || "N", redCard: off.redCard || "",
+    draw, winner, entered: true, enteredBy: state.user + " (suggested)"
+  };
+  saveLocalCache();
+  render();
+  await pushDoc("results", state.results);
+};
+
+// Overwrite an entered (flagged) result with the official values
+window.applyOfficialFix = async function(id) {
+  if (!hasSuggestion(id)) return;
+  const off = officialResults[id];
+  if (!confirm("Replace your entered result with the official " + off.scoreA + "–" + off.scoreB + "? This re-scores the match.")) return;
+  const draw = String(off.scoreA) === String(off.scoreB) ? "Y" : "N";
+  const winner = draw === "Y" ? "" : (Number(off.scoreA) > Number(off.scoreB) ? "A" : "B");
+  state.results[id] = {
+    scoreA: off.scoreA, scoreB: off.scoreB,
+    penalty: off.penalty || "N", redCard: off.redCard || "",
+    draw, winner, entered: true, enteredBy: state.user + " (corrected)"
+  };
+  saveLocalCache();
+  render();
+  await pushDoc("results", state.results);
+};
+
+window.setCompletedSort = function(s) { completedSort = s; render(); };
+window.setCompletedFilter = function(v) { completedFilter = v; render(); };
+
 window.exportData = function() {
   const data = JSON.stringify({ predictions: state.predictions, results: state.results, scoring: SCORING, payout: PAYOUT }, null, 2);
   const blob = new Blob([data], { type: "application/json" });
@@ -471,6 +588,7 @@ function render() {
   const t = totals();
   const upcoming = GROUP_MATCHES.filter(m => !(state.results[m.id]||{}).entered);
   const completed = GROUP_MATCHES.filter(m => (state.results[m.id]||{}).entered);
+  const flaggedCount = countFlagged();
 
   let bodyHtml = "";
   if (state.tab === "upcoming") {
@@ -478,9 +596,7 @@ function render() {
       ? '<div class="empty-state">All group matches completed! 🏆</div>'
       : upcoming.map(renderCard).join("");
   } else if (state.tab === "completed") {
-    bodyHtml = completed.length === 0
-      ? '<div class="empty-state">No completed matches yet.</div>'
-      : completed.map(renderCard).join("");
+    bodyHtml = renderCompleted(completed);
   } else if (state.tab === "settings") {
     bodyHtml = renderSettings();
   } else if (state.tab === "stats") {
@@ -503,10 +619,16 @@ function render() {
       </div>
       <div class="tabs">
         <button class="tab ${state.tab==='upcoming'?'active':''}" onclick="setTab('upcoming')">Upcoming (${upcoming.length})</button>
-        <button class="tab ${state.tab==='completed'?'active':''}" onclick="setTab('completed')">Completed (${completed.length})</button>
+        <button class="tab ${state.tab==='completed'?'active':''}" onclick="setTab('completed')">Completed (${completed.length})${flaggedCount>0?' <span style="background:#e74c3c;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px">'+flaggedCount+'</span>':''}</button>
         <button class="tab ${state.tab==='standings'?'active':''}" onclick="setTab('standings')">Standings</button>
         <button class="tab ${state.tab==='stats'?'active':''}" onclick="setTab('stats')">Stats</button>
         <button class="tab ${state.tab==='settings'?'active':''}" onclick="setTab('settings')">⚙️</button>
+      </div>
+      <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
+        <button onclick="uploadOfficialResults()" style="flex:1;height:34px;border-radius:7px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.1);color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">
+          📋 ${officialResults ? 'Re-upload Results Data' : 'Validate Results (upload data)'}
+        </button>
+        ${officialResults ? `<span style="font-size:11px;color:${flaggedCount>0?'#f9c22e':'#2ecc71'};font-weight:600;white-space:nowrap">${flaggedCount>0?'⚠️ '+flaggedCount+' to fix':'✓ all valid'}</span>` : ''}
       </div>
     </div>
     <div class="body">${bodyHtml}
@@ -598,10 +720,30 @@ function renderCard(m) {
     }
   }
 
+  // Suggestion banner: show if official data exists OR a day has passed
+  let suggestHtml = "";
+  if (!hasResult) {
+    if (hasSuggestion(m.id)) {
+      const off = officialResults[m.id];
+      suggestHtml = `
+        <div style="margin:0 14px 10px;background:rgba(46,204,113,0.1);border:1px solid rgba(46,204,113,0.3);border-radius:8px;padding:10px 12px">
+          <div style="font-size:11px;color:#2ecc71;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">📋 Suggested result available</div>
+          <div style="font-size:14px;font-weight:700;color:#fff;margin-bottom:8px">${esc(m.teamA)} ${esc(off.scoreA)} – ${esc(off.scoreB)} ${esc(m.teamB)}${off.penalty==='Y'?' · Pen':''}${off.redCard==='Y'?' · 🟥':''}</div>
+          <button onclick="applySuggestion(${m.id})" style="width:100%;height:38px;border-radius:7px;background:linear-gradient(135deg,#2ecc71,#1a9e52);color:#fff;font-size:13px;font-weight:700;border:none;cursor:pointer;font-family:inherit">⤵ Fill in this result</button>
+        </div>`;
+    } else if (dayHasPassed(m)) {
+      suggestHtml = `
+        <div style="margin:0 14px 10px;background:rgba(243,156,18,0.1);border:1px solid rgba(243,156,18,0.3);border-radius:8px;padding:9px 12px;font-size:12px;color:#f9c22e">
+          ⏰ This match has played — enter the result below, or upload official data to auto-fill.
+        </div>`;
+    }
+  }
+
   let resultHtml = "";
   if (!hasResult) {
     resultHtml = `
       <div class="result-section">
+        ${suggestHtml}
         <div class="result-header">
           <div class="result-label">Actual Result</div>
           <button class="result-toggle-btn ${resultOpen[m.id]?'open':''}" onclick="toggleResultForm(${m.id})">${resultOpen[m.id]?'Cancel':'Enter Result'}</button>
@@ -629,6 +771,21 @@ function renderCard(m) {
       </div>
     `;
   } else {
+    const v = validateMatch(m.id);
+    let validHtml = "";
+    if (v) {
+      if (v.ok) {
+        validHtml = `<div style="margin-top:8px;font-size:11px;color:#2ecc71;font-weight:600">✓ Matches official data</div>`;
+      } else {
+        const off = officialResults[m.id];
+        validHtml = `
+          <div style="margin-top:8px;background:rgba(231,76,60,0.12);border:1px solid rgba(231,76,60,0.35);border-radius:8px;padding:9px 11px">
+            <div style="font-size:11px;color:#e74c3c;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:5px">⚠️ Needs attention</div>
+            ${v.diffs.map(diff => `<div style="font-size:12px;color:rgba(255,255,255,0.7);margin-bottom:2px">${esc(diff.field)}: entered <strong style="color:#e74c3c">${esc(diff.entered)}</strong> · official <strong style="color:#2ecc71">${esc(diff.official)}</strong></div>`).join("")}
+            <button onclick="applyOfficialFix(${m.id})" style="width:100%;height:34px;border-radius:7px;background:#e74c3c;color:#fff;font-size:12px;font-weight:700;border:none;cursor:pointer;font-family:inherit;margin-top:6px">Use official result (re-score)</button>
+          </div>`;
+      }
+    }
     resultHtml = `
       <div class="result-section">
         <div class="result-banner">
@@ -643,6 +800,7 @@ function renderCard(m) {
             ${bibiPts!==null?`<span class="pts-badge ${ptsClass(bibiPts)}">B: ${bibiPts}</span>`:""}
           </div>
         </div>
+        ${validHtml}
       </div>
     `;
   }
@@ -697,6 +855,59 @@ function renderStandings(t, completedCount) {
       <div class="progress-bar"><div class="progress-fill" style="width:${(completedCount/GROUP_MATCHES.length)*100}%"></div></div>
     </div>
   `;
+}
+
+// ── Completed tab (sort + filter + flags) ─────────────────────────────────────
+function renderCompleted(completed) {
+  if (completed.length === 0) return '<div class="empty-state">No completed matches yet.</div>';
+
+  // Build team list for filter (only teams that appear in completed matches)
+  const teamSet = new Set();
+  completed.forEach(m => { teamSet.add(m.teamA); teamSet.add(m.teamB); });
+  const teams = Array.from(teamSet).sort();
+
+  // Apply filter
+  let list = completed.slice();
+  if (completedFilter) list = list.filter(m => m.teamA === completedFilter || m.teamB === completedFilter);
+
+  // Apply sort: "recent" = most recently played first (by date then id desc); "match" = match number asc
+  if (completedSort === "recent") {
+    list.sort((a, b) => {
+      const da = matchDate(a), db = matchDate(b);
+      if (da && db && da.getTime() !== db.getTime()) return db - da;
+      return b.id - a.id;
+    });
+  } else {
+    list.sort((a, b) => a.id - b.id);
+  }
+
+  const flagged = countFlagged();
+
+  const controls = `
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="flex:1;min-width:130px">
+        <div style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Sort</div>
+        <div style="display:flex;gap:4px">
+          <button onclick="setCompletedSort('recent')" style="flex:1;height:32px;border-radius:6px;border:1px solid ${completedSort==='recent'?'#f9c22e':'rgba(255,255,255,0.12)'};background:${completedSort==='recent'?'rgba(249,194,46,0.13)':'rgba(255,255,255,0.04)'};color:${completedSort==='recent'?'#f9c22e':'rgba(255,255,255,0.5)'};font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">Latest</button>
+          <button onclick="setCompletedSort('match')" style="flex:1;height:32px;border-radius:6px;border:1px solid ${completedSort==='match'?'#f9c22e':'rgba(255,255,255,0.12)'};background:${completedSort==='match'?'rgba(249,194,46,0.13)':'rgba(255,255,255,0.04)'};color:${completedSort==='match'?'#f9c22e':'rgba(255,255,255,0.5)'};font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">Match #</button>
+        </div>
+      </div>
+      <div style="flex:1;min-width:130px">
+        <div style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Filter by team</div>
+        <select onchange="setCompletedFilter(this.value)" style="width:100%;height:32px;border-radius:6px;border:1px solid rgba(255,255,255,0.12);background:#12213a;color:#fff;font-size:12px;font-family:inherit;padding:0 8px">
+          <option value="">All teams</option>
+          ${teams.map(t => `<option value="${esc(t)}" ${completedFilter===t?'selected':''}>${esc(t)}</option>`).join("")}
+        </select>
+      </div>
+    </div>
+    ${flagged > 0 ? `<div style="background:rgba(231,76,60,0.12);border:1px solid rgba(231,76,60,0.3);border-radius:8px;padding:9px 12px;margin-bottom:12px;font-size:12px;color:#e74c3c;font-weight:600">⚠️ ${flagged} match(es) don't match the uploaded official data — scroll to find the red flags.</div>` : ""}
+  `;
+
+  const cards = list.length === 0
+    ? `<div class="empty-state">No completed matches for ${esc(completedFilter)}.</div>`
+    : list.map(renderCard).join("");
+
+  return controls + cards;
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
