@@ -205,6 +205,8 @@ const GROUP_MATCHES = [
 
 const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5, redCard: 5 };
 const DEFAULT_PAYOUT = { ptsPerUnit: 100, dollarsPerUnit: 20 };
+const DEFAULT_LATE = { latePercent: 50 }; // late bets score this % of normal
+let LATE = { ...DEFAULT_LATE };
 // Stage point multipliers (locked-in decision: group 1x, R32-Semi 2x; 3rd-place & Final default 2x, adjustable)
 const DEFAULT_MULTIPLIERS = { "Group": 1, "Round of 32": 2, "Round of 16": 2, "Quarter-Final": 2, "Semi-Final": 2, "Third Place": 2, "Final": 2 };
 let SCORING = { ...DEFAULT_SCORING };
@@ -245,7 +247,7 @@ const GROUP_COLORS = { A:"#e74c3c",B:"#e67e22",C:"#f1c40f",D:"#2ecc71",E:"#1abc9
 const STORE_KEY = "wc26_tracker_v1";
 let state = {
   user: null,
-  tab: "upcoming",
+  tab: "today",
   predictions: {},  // matchId -> { luis: {scoreA, scoreB, draw, penalty, locked}, bibi: {...} }
   results: {},      // matchId -> { scoreA, scoreB, winner, draw, penalty, entered }
   knockout: { matches: [], r32Assignments: {} }, // r32Assignments: { "101_b": "Ecuador", ... }
@@ -270,6 +272,7 @@ function loadLocalCache() {
       if (saved.scoring) SCORING = { ...DEFAULT_SCORING, ...saved.scoring };
       if (saved.payout) PAYOUT = { ...DEFAULT_PAYOUT, ...saved.payout };
       if (saved.multipliers) MULTIPLIERS = { ...DEFAULT_MULTIPLIERS, ...saved.multipliers };
+      if (saved.late) LATE = { ...DEFAULT_LATE, ...saved.late };
       if (saved.knockout) state.knockout = { matches: [], r32Assignments: {}, ...saved.knockout };
     }
   } catch (e) { console.error("local load failed", e); }
@@ -284,6 +287,7 @@ function saveLocalCache() {
       scoring: SCORING,
       payout: PAYOUT,
       multipliers: MULTIPLIERS,
+      late: LATE,
       knockout: { r32Assignments: state.knockout.r32Assignments || {} },
     }));
   } catch (e) { console.error("local cache failed", e); }
@@ -325,6 +329,7 @@ function startFirestoreSync() {
         SCORING = { ...DEFAULT_SCORING, scoreA: data.scoreA ?? 15, scoreB: data.scoreB ?? 15, winner: data.winner ?? 10, draw: data.draw ?? 5, penalty: data.penalty ?? 5, redCard: data.redCard ?? 5 };
         PAYOUT = { ptsPerUnit: data.ptsPerUnit ?? 100, dollarsPerUnit: data.dollarsPerUnit ?? 20 };
         if (data.multipliers) MULTIPLIERS = { ...DEFAULT_MULTIPLIERS, ...data.multipliers };
+        if (data.late) LATE = { ...DEFAULT_LATE, ...data.late };
         saveLocalCache();
         refreshKnockout();
         render();
@@ -416,7 +421,10 @@ function calcPoints(pred, result, stage) {
   }
   // Apply stage multiplier (group = 1x, knockouts weighted)
   const mult = stageMultiplier(stage || "Group");
-  return pts * mult;
+  let total = pts * mult;
+  // Apply late-bet haircut if this prediction was locked after kickoff
+  if (pred.late) total = total * ((LATE.latePercent ?? 50) / 100);
+  return total;
 }
 
 // All matches = group stage + any knockout matches created in state.knockout
@@ -578,6 +586,83 @@ function matchDate(m) {
 }
 
 // Has at least one full day passed since the match date?
+// Compute the real kickoff Date for a match (ET). Times in data are ET; we build a Date
+// in ET by parsing date + time and treating as America/New_York via a fixed offset approach.
+// Simpler robust approach: build an ISO string with -04:00 (EDT, which covers Jun-Jul 2026).
+function kickoffDate(m) {
+  if (!m.date || !m.time) return null;
+  const months = { Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11 };
+  const [mo, day] = m.date.split(" ");
+  const month = months[mo];
+  if (month === undefined) return null;
+  // parse "7:00 PM"
+  const tm = m.time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!tm) return null;
+  let hr = parseInt(tm[1],10); const min = parseInt(tm[2],10); const ap = tm[3].toUpperCase();
+  if (ap === "PM" && hr !== 12) hr += 12;
+  if (ap === "AM" && hr === 12) hr = 0;
+  // EDT offset is -04:00 across the tournament window (June-July 2026)
+  const iso = `2026-${String(month+1).padStart(2,"0")}-${String(parseInt(day,10)).padStart(2,"0")}T${String(hr).padStart(2,"0")}:${String(min).padStart(2,"0")}:00-04:00`;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// The "betting day" a match belongs to. Games kicking off 00:00-03:59 ET roll into the PREVIOUS day.
+function bettingDay(m) {
+  const ko = kickoffDate(m);
+  if (!ko) {
+    // fall back to the plain date if no kickoff time
+    const d = matchDate(m);
+    return d ? ymd(d) : null;
+  }
+  // Work in ET. ko is a real Date; shift to ET wall-clock by using the -4 offset baked into kickoffDate.
+  // Recover ET hour from the ISO we built: easier to recompute from m.time.
+  const tm = (m.time||"").match(/(\d+):(\d+)\s*(AM|PM)/i);
+  let etHour = null;
+  if (tm) {
+    etHour = parseInt(tm[1],10);
+    const ap = tm[3].toUpperCase();
+    if (ap === "PM" && etHour !== 12) etHour += 12;
+    if (ap === "AM" && etHour === 12) etHour = 0;
+  }
+  const baseDate = matchDate(m); // calendar date from m.date
+  if (!baseDate) return null;
+  if (etHour !== null && etHour >= 0 && etHour < 4) {
+    // roll into previous day
+    const prev = new Date(baseDate.getTime());
+    prev.setDate(prev.getDate() - 1);
+    return ymd(prev);
+  }
+  return ymd(baseDate);
+}
+
+function ymd(d) {
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+
+// Today's betting day key in ET (so "today" matches kickoff grouping)
+function todayKeyET() {
+  // Get current ET wall-clock date
+  const now = new Date();
+  // Convert to ET via locale string trick
+  const etStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
+  const et = new Date(etStr);
+  // Apply the same 0-4AM rollback so early games count as "yesterday's" slate
+  if (et.getHours() >= 0 && et.getHours() < 4) {
+    const prev = new Date(et.getTime());
+    prev.setDate(prev.getDate() - 1);
+    return ymd(prev);
+  }
+  return ymd(et);
+}
+
+// Is a prediction being locked NOW considered late (after kickoff)?
+function isLateNow(m) {
+  const ko = kickoffDate(m);
+  if (!ko) return false; // if we can't determine kickoff, never penalize
+  return new Date() >= ko;
+}
+
 function dayHasPassed(m) {
   const d = matchDate(m);
   if (!d) return false;
@@ -610,7 +695,7 @@ window.updateSetting = async function(group, field, value) {
   else PAYOUT[field] = num;
   saveLocalCache();
   render();
-  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
+  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS, late: LATE });
 };
 window.resetSettings = async function() {
   if (!confirm("Reset all point values and payout to defaults?")) return;
@@ -618,7 +703,7 @@ window.resetSettings = async function() {
   PAYOUT = { ...DEFAULT_PAYOUT };
   saveLocalCache();
   render();
-  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
+  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS, late: LATE });
 };
 
 window.updateDraft = function(id, field, value) {
@@ -629,10 +714,27 @@ window.updateDraft = function(id, field, value) {
 window.lockPrediction = async function(id) {
   const d = drafts[id];
   if (!d || d.scoreA === "" || d.scoreB === "") return;
-  if (!confirm("Lock this prediction? It can't be changed after.")) return;
+
+  // Hard cutoff: can't predict once a result is entered
+  if ((state.results[id]||{}).entered) {
+    alert("This match already has a result entered — predictions are closed.");
+    return;
+  }
+
+  // Find the match to check kickoff time
+  const m = allMatches().find(x => x.id === id);
+  const late = m ? isLateNow(m) : false;
+
+  if (late) {
+    const pct = LATE.latePercent ?? 50;
+    if (!confirm(`⏰ This bet is LATE — kickoff has passed.\n\nIt will score only ${pct}% of normal points. Lock it anyway?`)) return;
+  } else {
+    if (!confirm("Lock this prediction? It can't be changed after.")) return;
+  }
+
   const userKey = state.user.toLowerCase();
   state.predictions[id] = state.predictions[id] || {};
-  state.predictions[id][userKey] = { ...d, locked: true, lockedAt: new Date().toISOString() };
+  state.predictions[id][userKey] = { ...d, locked: true, lockedAt: new Date().toISOString(), late: late };
   saveLocalCache();
   delete drafts[id];
   render();
@@ -736,7 +838,17 @@ window.updateMultiplier = async function(stage, value) {
   saveLocalCache();
   refreshKnockout();
   render();
-  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
+  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS, late: LATE });
+};
+
+window.updateLate = async function(value) {
+  let num = Number(value);
+  if (isNaN(num) || num < 0) return;
+  if (num > 100) num = 100;
+  LATE.latePercent = num;
+  saveLocalCache();
+  render();
+  await pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS, late: LATE });
 };
 
 // Assign a third-place team to an R32 slot side ("101_a" / "101_b")
@@ -790,7 +902,7 @@ window.importData = function() {
         render();
         pushDoc("predictions", state.predictions);
         pushDoc("results", state.results);
-        pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS });
+        pushDoc("settings", { ...SCORING, ...PAYOUT, multipliers: MULTIPLIERS, late: LATE });
         alert("✓ Imported and synced");
       } catch (err) { alert("Import failed: invalid file"); }
     };
@@ -806,12 +918,18 @@ function render() {
 
   const t = totals();
   const koResolved = (state.knockout.matches||[]).filter(m => m.teamAResolved && m.teamBResolved);
-  const upcoming = GROUP_MATCHES.concat(koResolved).filter(m => !(state.results[m.id]||{}).entered);
-  const completed = GROUP_MATCHES.concat(koResolved).filter(m => (state.results[m.id]||{}).entered);
+  const allM = GROUP_MATCHES.concat(koResolved);
+  const upcoming = allM.filter(m => !(state.results[m.id]||{}).entered);
+  const completed = allM.filter(m => (state.results[m.id]||{}).entered);
+  const todayKey = todayKeyET();
+  const todayMatches = allM.filter(m => bettingDay(m) === todayKey);
+  const todayCount = todayMatches.length;
   const flaggedCount = countFlagged();
 
   let bodyHtml = "";
-  if (state.tab === "upcoming") {
+  if (state.tab === "today") {
+    bodyHtml = renderToday(todayMatches, todayKey);
+  } else if (state.tab === "upcoming") {
     bodyHtml = upcoming.length === 0
       ? '<div class="empty-state">All group matches completed! 🏆</div>'
       : upcoming.map(renderCard).join("");
@@ -840,6 +958,7 @@ function render() {
         </div>
       </div>
       <div class="tabs">
+        <button class="tab ${state.tab==='today'?'active':''}" onclick="setTab('today')">Today (${todayCount})</button>
         <button class="tab ${state.tab==='upcoming'?'active':''}" onclick="setTab('upcoming')">Upcoming (${upcoming.length})</button>
         <button class="tab ${state.tab==='completed'?'active':''}" onclick="setTab('completed')">Completed (${completed.length})${flaggedCount>0?' <span style="background:#e74c3c;color:#fff;border-radius:8px;padding:0 5px;font-size:10px;margin-left:2px">'+flaggedCount+'</span>':''}</button>
         <button class="tab ${state.tab==='standings'?'active':''}" onclick="setTab('standings')">Standings</button>
@@ -895,9 +1014,11 @@ function renderCard(m) {
 
   let predHtml = "";
   if (!isLocked) {
+    const lateNow = isLateNow(m);
     predHtml = `
       <div class="form-area">
         <div class="form-label">Your Prediction</div>
+        ${lateNow ? `<div style="background:rgba(230,126,34,0.12);border:1px solid rgba(230,126,34,0.35);border-radius:8px;padding:8px 11px;margin-bottom:10px;font-size:12px;color:#e67e22;font-weight:600">⏰ Kickoff has passed — this bet will score only ${LATE.latePercent??50}% of normal points.</div>` : ""}
         <div class="score-row">
           <input class="score-input" type="number" inputmode="numeric" min="0" max="20" placeholder="0" value="${esc(d.scoreA)}"
             oninput="updateDraft(${m.id},'scoreA',this.value)">
@@ -922,7 +1043,7 @@ function renderCard(m) {
     `;
   } else {
     predHtml = `
-      <div class="locked-badge">🔒 Locked</div>
+      <div class="locked-badge">🔒 Locked${myPred.late ? ` <span style="color:#e67e22">· ⏰ Late (−${100-(LATE.latePercent??50)}%)</span>` : ""}</div>
       <div class="pred-summary">
         <span class="pred-score">${esc(myPred.scoreA)}</span>
         <span style="color:rgba(255,255,255,0.3)">–</span>
@@ -1081,6 +1202,67 @@ function renderStandings(t, completedCount) {
 }
 
 // ── Completed tab (sort + filter + flags) ─────────────────────────────────────
+function renderToday(todayMatches, todayKey) {
+  // Friendly date label
+  const parts = todayKey ? todayKey.split("-") : null;
+  const dateLabel = parts ? new Date(parts[0], parts[1]-1, parts[2]).toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" }) : "Today";
+
+  if (todayMatches.length === 0) {
+    // Find the next day that has matches
+    const allM = GROUP_MATCHES.concat((state.knockout.matches||[]).filter(m => m.teamAResolved && m.teamBResolved));
+    const futureDays = [...new Set(allM.map(m => bettingDay(m)).filter(Boolean).filter(d => d > todayKey))].sort();
+    const nextDay = futureDays[0];
+    let nextLabel = "";
+    if (nextDay) {
+      const np = nextDay.split("-");
+      const nextMatches = allM.filter(m => bettingDay(m) === nextDay);
+      nextLabel = `<div style="margin-top:14px;font-size:13px;color:rgba(255,255,255,0.6)">Next up: <strong style="color:#f9c22e">${new Date(np[0],np[1]-1,np[2]).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})}</strong> — ${nextMatches.length} match${nextMatches.length===1?'':'es'}</div>`;
+    }
+    return `
+      <div class="standings-card" style="text-align:center;padding:28px 16px">
+        <div style="font-size:40px;margin-bottom:8px">📅</div>
+        <div style="font-size:16px;font-weight:800;margin-bottom:4px">No matches today</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.5)">${dateLabel}</div>
+        ${nextLabel}
+      </div>`;
+  }
+
+  // Split: needs your prediction vs already locked/done
+  const userKey = state.user.toLowerCase();
+  const needsPred = [];
+  const handled = [];
+  todayMatches.forEach(m => {
+    const myPred = (state.predictions[m.id]||{})[userKey];
+    const hasResult = (state.results[m.id]||{}).entered;
+    if (!myPred && !hasResult) needsPred.push(m);
+    else handled.push(m);
+  });
+
+  // Sort each by kickoff time
+  const byKickoff = (a,b) => {
+    const ka = kickoffDate(a), kb = kickoffDate(b);
+    if (ka && kb) return ka - kb;
+    return a.id - b.id;
+  };
+  needsPred.sort(byKickoff);
+  handled.sort(byKickoff);
+
+  const header = `
+    <div style="margin-bottom:12px">
+      <div style="font-size:18px;font-weight:800">${dateLabel}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.5)">${todayMatches.length} match${todayMatches.length===1?'':'es'} · ${needsPred.length} awaiting your pick</div>
+    </div>`;
+
+  let html = header;
+  if (needsPred.length > 0) {
+    html += `<div class="section-title" style="color:#f9c22e">⚡ Lock your picks</div>` + needsPred.map(renderCard).join("");
+  }
+  if (handled.length > 0) {
+    html += `<div class="section-title">Locked & results</div>` + handled.map(renderCard).join("");
+  }
+  return html;
+}
+
 function renderCompleted(completed) {
   if (completed.length === 0) return '<div class="empty-state">No completed matches yet.</div>';
 
@@ -1437,7 +1619,9 @@ function computeStats() {
       if (p.penalty === "Y") { s.cal.penYesPredicted++; if (result.penalty === "Y") s.cal.penYesCorrect++; }
       if (p.redCard === "Y") { s.cal.redYesPredicted++; if (result.redCard === "Y") s.cal.redYesCorrect++; }
 
-      const weighted = matchPts * mult;
+      let weighted = matchPts * mult;
+      if (p.late) weighted = weighted * ((LATE.latePercent ?? 50) / 100);
+      if (p.late) s.lateBets = (s.lateBets || 0) + 1;
       s.total += weighted;
       if (weighted > s.bestMatch.pts) s.bestMatch = { pts: weighted, match: m };
       if (matchPts === 0) s.blanks++;
@@ -1887,6 +2071,24 @@ function renderSettings() {
         </div>`).join("")}
       <div style="font-size:11px;color:rgba(255,255,255,0.4);padding-top:12px;line-height:1.5">
         Group stage is always 1×. Knockout points = base category points × this multiplier. (Locked-in plan: R32–Semi at 2×; 3rd-place & Final default 2×, decide later.)
+      </div>
+    </div>
+    <div class="section-title">Late Bets ⏰</div>
+    <div class="standings-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0">
+        <div>
+          <div style="font-size:13px;font-weight:600">Late bet scores</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.35);margin-top:2px">% of normal points if locked after kickoff</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:4px">
+          <input type="number" inputmode="numeric" min="0" max="100" value="${LATE.latePercent ?? 50}"
+            style="width:62px;height:42px;border-radius:8px;border:1.5px solid rgba(230,126,34,0.4);background:rgba(230,126,34,0.07);color:#e67e22;font-size:18px;font-weight:700;text-align:center;outline:none;font-family:inherit"
+            onchange="updateLate(this.value)">
+          <span style="color:#e67e22;font-weight:700">%</span>
+        </div>
+      </div>
+      <div style="font-size:11px;color:rgba(255,255,255,0.4);padding-top:6px;line-height:1.5">
+        A bet locked after kickoff is tagged ⏰ Late and scores this %. Once a result is entered, predictions close entirely.
       </div>
     </div>
     <div class="section-title">Payout</div>
