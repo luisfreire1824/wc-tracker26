@@ -1136,6 +1136,8 @@ function renderBracket() {
         </div>
         <div class="progress-bar" style="margin-top:12px"><div class="progress-fill" style="width:${(entered/48)*100}%"></div></div>
       </div>
+      <div class="section-title">Third-Place Race 🥉</div>
+      ${renderThirdPlaceRace(standings)}
       <div class="section-title">Live Group Standings</div>
       ${renderStandingsTables(standings)}
       <div style="font-size:11px;color:rgba(255,255,255,0.3);text-align:center;margin-top:8px;line-height:1.5">
@@ -1212,6 +1214,65 @@ function renderBracket() {
       Winners & runners-up auto-filled from standings. Later rounds (R16 onward) will generate as R32 results come in — coming next.
     </div>
   `;
+}
+
+// Render the live third-place race: all 12 groups' 3rd-placed teams, ranked, top 8 qualify
+function renderThirdPlaceRace(standings) {
+  // Gather the team currently sitting 3rd in each group (only groups with a 3rd slot filled)
+  const thirds = [];
+  Object.keys(standings).forEach(g => {
+    const t = standings[g][2];
+    if (t) thirds.push(t);
+  });
+  if (thirds.length === 0) {
+    return '<div class="standings-card" style="text-align:center;color:rgba(255,255,255,0.4);font-size:13px">No standings yet — enter some group results to see the race.</div>';
+  }
+  const ranked = thirds.slice().sort(sortTeams);
+
+  // How many groups have completed all their matches? (third place is only "locked" when group is done)
+  const groupDone = {};
+  Object.keys(standings).forEach(g => {
+    const groupMatches = GROUP_MATCHES.filter(m => m.group === g);
+    groupDone[g] = groupMatches.every(m => (state.results[m.id]||{}).entered);
+  });
+
+  const rows = ranked.map((t, i) => {
+    const qualifying = i < 8;
+    const locked = groupDone[t.group];
+    const rowBg = qualifying ? "rgba(46,204,113,0.08)" : "rgba(231,76,60,0.05)";
+    const rankColor = qualifying ? "#2ecc71" : "rgba(255,255,255,0.35)";
+    return `
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:12px;background:${rowBg};border-radius:6px;margin-bottom:3px">
+        <span style="color:${rankColor};font-weight:800;width:18px">${i+1}</span>
+        <span style="width:30px"><span class="group-badge" style="background:#34495e;font-size:9px">${t.group}</span></span>
+        <span style="flex:1;color:rgba(255,255,255,0.9);font-weight:600">${esc(t.team)}${locked?'':' <span style="font-size:9px;color:rgba(243,156,18,0.8)">(in progress)</span>'}</span>
+        <span style="color:rgba(255,255,255,0.4);width:20px;text-align:center" title="Played">${t.played}</span>
+        <span style="color:rgba(255,255,255,0.55);width:28px;text-align:center" title="Goal difference">${t.gd>0?'+':''}${t.gd}</span>
+        <span style="color:rgba(255,255,255,0.4);width:20px;text-align:center" title="Goals for">${t.gf}</span>
+        <span style="color:#fff;font-weight:700;width:22px;text-align:center" title="Points">${t.points}</span>
+      </div>`;
+  });
+
+  // Insert the qualifying cutoff line after the 8th team
+  let rowsWithLine = [];
+  rows.forEach((r, i) => {
+    rowsWithLine.push(r);
+    if (i === 7 && rows.length > 8) {
+      rowsWithLine.push(`<div style="display:flex;align-items:center;gap:8px;margin:5px 0"><div style="flex:1;height:1px;background:rgba(231,76,60,0.4)"></div><span style="font-size:9px;color:#e74c3c;font-weight:700;letter-spacing:0.5px">QUALIFYING CUTOFF — TOP 8</span><div style="flex:1;height:1px;background:rgba(231,76,60,0.4)"></div></div>`);
+    }
+  });
+
+  return `
+    <div class="standings-card" style="padding:12px">
+      <div style="display:flex;align-items:center;gap:8px;padding:0 10px 6px;font-size:9px;color:rgba(255,255,255,0.3);font-weight:600">
+        <span style="width:18px">#</span><span style="width:30px">GRP</span><span style="flex:1">TEAM</span>
+        <span style="width:20px;text-align:center">P</span><span style="width:28px;text-align:center">GD</span><span style="width:20px;text-align:center">GF</span><span style="width:22px;text-align:center">PTS</span>
+      </div>
+      ${rowsWithLine.join("")}
+      <div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:8px;padding:0 10px;line-height:1.5">
+        🟢 Top 8 qualify for R32 · 🔴 eliminated. "In progress" = that group hasn't finished, so the team could still move up or down out of 3rd.
+      </div>
+    </div>`;
 }
 
 // Render compact group standings tables
