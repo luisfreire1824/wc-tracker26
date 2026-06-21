@@ -257,6 +257,7 @@ let resultOpen = {};   // matchId -> bool
 let officialResults = null;   // { matchId: {scoreA, scoreB, penalty, redCard} } from uploaded file
 let completedSort = "recent"; // "recent" | "match"
 let completedFilter = "";     // team name filter ("" = all)
+let completedConfFilter = "";  // confederation filter ("" = all)
 
 function loadLocalCache() {
   try {
@@ -726,6 +727,7 @@ window.applyOfficialFix = async function(id) {
 
 window.setCompletedSort = function(s) { completedSort = s; render(); };
 window.setCompletedFilter = function(v) { completedFilter = v; render(); };
+window.setCompletedConfFilter = function(v) { completedConfFilter = v; completedFilter = ""; render(); };
 
 window.updateMultiplier = async function(stage, value) {
   const num = Number(value);
@@ -1082,13 +1084,30 @@ function renderStandings(t, completedCount) {
 function renderCompleted(completed) {
   if (completed.length === 0) return '<div class="empty-state">No completed matches yet.</div>';
 
-  // Build team list for filter (only teams that appear in completed matches)
+  // Confederations present in completed matches (always from full list)
+  const confSet = new Set();
+  completed.forEach(m => { confSet.add(confedOf(m.teamA)); confSet.add(confedOf(m.teamB)); });
+  const confs = CONFED_LIST.filter(c => confSet.has(c));
+
+  // Team dropdown narrows to the selected confederation (interdependent, one-directional)
   const teamSet = new Set();
-  completed.forEach(m => { teamSet.add(m.teamA); teamSet.add(m.teamB); });
+  completed.forEach(m => {
+    if (completedConfFilter) {
+      // only list teams that belong to the chosen confederation
+      if (confedOf(m.teamA) === completedConfFilter) teamSet.add(m.teamA);
+      if (confedOf(m.teamB) === completedConfFilter) teamSet.add(m.teamB);
+    } else {
+      teamSet.add(m.teamA); teamSet.add(m.teamB);
+    }
+  });
   const teams = Array.from(teamSet).sort();
 
-  // Apply filter
+  // If the active team filter is no longer valid under the confederation, drop it
+  if (completedFilter && !teams.includes(completedFilter)) completedFilter = "";
+
+  // Apply filters
   let list = completed.slice();
+  if (completedConfFilter) list = list.filter(m => confedOf(m.teamA) === completedConfFilter || confedOf(m.teamB) === completedConfFilter);
   if (completedFilter) list = list.filter(m => m.teamA === completedFilter || m.teamB === completedFilter);
 
   // Apply sort: "recent" = most recently played first (by date then id desc); "match" = match number asc
@@ -1105,7 +1124,7 @@ function renderCompleted(completed) {
   const flagged = countFlagged();
 
   const controls = `
-    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+    <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
       <div style="flex:1;min-width:130px">
         <div style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Sort</div>
         <div style="display:flex;gap:4px">
@@ -1121,11 +1140,19 @@ function renderCompleted(completed) {
         </select>
       </div>
     </div>
+    <div style="margin-bottom:12px">
+      <div style="font-size:10px;color:rgba(255,255,255,0.4);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Filter by confederation</div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap">
+        <button onclick="setCompletedConfFilter('')" style="height:30px;padding:0 11px;border-radius:6px;border:1px solid ${completedConfFilter===''?'#f9c22e':'rgba(255,255,255,0.12)'};background:${completedConfFilter===''?'rgba(249,194,46,0.13)':'rgba(255,255,255,0.04)'};color:${completedConfFilter===''?'#f9c22e':'rgba(255,255,255,0.5)'};font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">All</button>
+        ${confs.map(c => `<button onclick="setCompletedConfFilter('${c}')" style="height:30px;padding:0 11px;border-radius:6px;border:1px solid ${completedConfFilter===c?CONFED_COLORS[c]:'rgba(255,255,255,0.12)'};background:${completedConfFilter===c?CONFED_COLORS[c]+'22':'rgba(255,255,255,0.04)'};color:${completedConfFilter===c?CONFED_COLORS[c]:'rgba(255,255,255,0.5)'};font-size:11px;font-weight:600;cursor:pointer;font-family:inherit"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${CONFED_COLORS[c]};margin-right:5px"></span>${c}</button>`).join("")}
+      </div>
+    </div>
     ${flagged > 0 ? `<div style="background:rgba(231,76,60,0.12);border:1px solid rgba(231,76,60,0.3);border-radius:8px;padding:9px 12px;margin-bottom:12px;font-size:12px;color:#e74c3c;font-weight:600">⚠️ ${flagged} match(es) don't match the uploaded official data — scroll to find the red flags.</div>` : ""}
   `;
 
+  const filterLabel = [completedFilter, completedConfFilter].filter(Boolean).join(" / ");
   const cards = list.length === 0
-    ? `<div class="empty-state">No completed matches for ${esc(completedFilter)}.</div>`
+    ? `<div class="empty-state">No completed matches for ${esc(filterLabel || "this filter")}.</div>`
     : list.map(renderCard).join("");
 
   return controls + cards;
