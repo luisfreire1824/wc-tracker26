@@ -226,6 +226,19 @@ const FLAG_CODES = {
   "Jordan":"jo","Portugal":"pt","DR Congo":"cd","Uzbekistan":"uz","Colombia":"co",
   "England":"gb-eng","Croatia":"hr","Ghana":"gh","Panama":"pa"
 };
+// Confederation mapping for all 48 teams
+const CONFEDERATION = {
+  "Brazil":"CONMEBOL","Argentina":"CONMEBOL","Uruguay":"CONMEBOL","Colombia":"CONMEBOL","Ecuador":"CONMEBOL","Paraguay":"CONMEBOL",
+  "Spain":"UEFA","France":"UEFA","England":"UEFA","Germany":"UEFA","Netherlands":"UEFA","Portugal":"UEFA","Belgium":"UEFA","Croatia":"UEFA","Switzerland":"UEFA","Austria":"UEFA","Norway":"UEFA","Scotland":"UEFA","Czechia":"UEFA","Bosnia & Herz.":"UEFA","Sweden":"UEFA","Turkiye":"UEFA",
+  "USA":"CONCACAF","Mexico":"CONCACAF","Canada":"CONCACAF","Panama":"CONCACAF","Haiti":"CONCACAF","Curacao":"CONCACAF",
+  "Morocco":"CAF","Senegal":"CAF","Egypt":"CAF","Ivory Coast":"CAF","Ghana":"CAF","Tunisia":"CAF","Algeria":"CAF","Cape Verde":"CAF","South Africa":"CAF","DR Congo":"CAF",
+  "Japan":"AFC","South Korea":"AFC","Iran":"AFC","Saudi Arabia":"AFC","Qatar":"AFC","Australia":"AFC","Uzbekistan":"AFC","Jordan":"AFC","Iraq":"AFC",
+  "New Zealand":"OFC"
+};
+const CONFED_LIST = ["CONMEBOL","UEFA","CONCACAF","CAF","AFC","OFC"];
+const CONFED_COLORS = { CONMEBOL:"#f1c40f", UEFA:"#3498db", CONCACAF:"#e74c3c", CAF:"#2ecc71", AFC:"#e67e22", OFC:"#9b59b6" };
+function confedOf(team) { return CONFEDERATION[team] || "Other"; }
+
 const GROUP_COLORS = { A:"#e74c3c",B:"#e67e22",C:"#f1c40f",D:"#2ecc71",E:"#1abc9c",F:"#3498db",G:"#9b59b6",H:"#e91e63",I:"#00bcd4",J:"#ff5722",K:"#8bc34a",L:"#607d8b" };
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -1355,6 +1368,32 @@ function computeStats() {
         if (p.redCard === result.redCard) { s.cat.redCard += (SCORING.redCard || 0); s.hits.redCard++; matchPts += (SCORING.redCard || 0); }
       }
 
+      // ── Weighted category contribution (for gap attribution) ──
+      if (hitA) s.wcat.exact += SCORING.scoreA * mult;
+      if (hitB) s.wcat.exact += SCORING.scoreB * mult;
+      if (result.draw === "Y") { if (p.draw === "Y") s.wcat.draw += SCORING.draw * mult; }
+      else { const pw = Number(p.scoreA) > Number(p.scoreB) ? "A" : "B"; if (pw === result.winner) s.wcat.winner += SCORING.winner * mult; }
+      if (p.penalty === result.penalty) s.wcat.penalty += SCORING.penalty * mult;
+      if (p.redCard !== undefined && p.redCard !== "" && result.redCard !== undefined && result.redCard !== "" && p.redCard === result.redCard) s.wcat.redCard += (SCORING.redCard || 0) * mult;
+
+      // ── Confederation lean & accuracy ──
+      // m.teamA and m.teamB each belong to a confederation. Attribute predicted goals to each.
+      const confA = confedOf(m.teamA), confB = confedOf(m.teamB);
+      const cA = ensureConfed(s, confA), cB = ensureConfed(s, confB);
+      const paG = Number(p.scoreA), pbG = Number(p.scoreB);
+      if (!isNaN(paG)) { cA.goalsPredicted += paG; cA.exactGoalAttempts++; if (String(p.scoreA) === String(result.scoreA)) cA.exactGoalHits++; }
+      if (!isNaN(pbG)) { cB.goalsPredicted += pbG; cB.exactGoalAttempts++; if (String(p.scoreB) === String(result.scoreB)) cB.exactGoalHits++; }
+      // Win pick: which team did they predict to win? (skip if they predicted a draw)
+      if (!isNaN(paG) && !isNaN(pbG) && paG !== pbG) {
+        const pickedConf = paG > pbG ? confA : confB;
+        const pc = ensureConfed(s, pickedConf);
+        pc.winsPicked++;
+        pc.winPicksTotal++;
+        // correct if that team actually won
+        const actualWinnerConf = result.draw === "Y" ? null : (result.winner === "A" ? confA : confB);
+        if (actualWinnerConf === pickedConf) pc.winPicksCorrect++;
+      }
+
       // ── Fingerprint: predicted goals, scorelines, draw tendency ──
       const pa = Number(p.scoreA), pb = Number(p.scoreB);
       if (!isNaN(pa) && !isNaN(pb)) {
@@ -1403,7 +1442,22 @@ function computeStats() {
     totalGoalsActual += Number(result.scoreA) + Number(result.scoreB);
   });
 
-  return { players, rowWins, scoredMatches, totalGoalsActual, biggestSwing, timeline, bestStreak, curStreak };
+  // ── Magic number inputs ──
+  // Remaining matches = matches NOT yet scored. Max points still available per player
+  // depends on whether they can still predict (group matches are pre-known; knockouts appear later).
+  const maxPerGame = SCORING.scoreA + SCORING.scoreB + SCORING.winner + SCORING.draw + SCORING.penalty + (SCORING.redCard || 0);
+  let remainingMaxLuis = 0, remainingMaxBibi = 0, remainingCount = 0;
+  allMatches().forEach(m => {
+    if ((state.results[m.id]||{}).entered) return;
+    remainingCount++;
+    const mult = stageMultiplier(matchStage(m));
+    // Both players can still earn up to maxPerGame * mult on each unplayed match
+    remainingMaxLuis += maxPerGame * mult;
+    remainingMaxBibi += maxPerGame * mult;
+  });
+
+  return { players, rowWins, scoredMatches, totalGoalsActual, biggestSwing, timeline, bestStreak, curStreak,
+    remainingCount, remainingMaxLuis, remainingMaxBibi, maxPerGame };
 }
 
 function emptyPlayerStats() {
@@ -1417,7 +1471,14 @@ function emptyPlayerStats() {
     fp: { totalGoalsPredicted: 0, drawsPredicted: 0, scorelineCount: {} },
     cal: { penYesPredicted: 0, penYesCorrect: 0, redYesPredicted: 0, redYesCorrect: 0 },
     close: { totalGoalDiffError: 0, totalGoalError: 0, n: 0 },
+    wcat: { exact: 0, winner: 0, draw: 0, penalty: 0, redCard: 0 }, // WEIGHTED category points
+    confed: {}, // per-confederation: { goalsPredicted, winsPicked, winPicksCorrect, winPicksTotal, exactGoalHits, exactGoalAttempts }
   };
+}
+
+function ensureConfed(s, c) {
+  if (!s.confed[c]) s.confed[c] = { goalsPredicted: 0, winsPicked: 0, winPicksCorrect: 0, winPicksTotal: 0, exactGoalHits: 0, exactGoalAttempts: 0 };
+  return s.confed[c];
 }
 
 function statBar(label, luisVal, bibiVal, maxVal) {
@@ -1470,11 +1531,89 @@ function renderStats() {
 
   const avgGoals = st.scoredMatches > 0 ? (st.totalGoalsActual / st.scoredMatches).toFixed(1) : "—";
 
+  // ── Magic number logic ──
+  const leader = L.total >= B.total ? "Luis" : "Bibi";
+  const trailer = leader === "Luis" ? "Bibi" : "Luis";
+  const lead = Math.abs(L.total - B.total);
+  const trailerMax = leader === "Luis" ? st.remainingMaxBibi : st.remainingMaxLuis;
+  // Can the trailer still catch up? They can gain at most trailerMax while leader gains 0.
+  const stillPossible = trailerMax >= lead;
+  // "Magic number" = points the LEADER needs to bank to make it mathematically impossible for trailer.
+  // If leader gains G and trailer gains their max, leader is safe when (leadNow + G) > trailerMax_remaining... 
+  // Simpler clinch framing: leader clinches when current lead > trailer's remaining max.
+  const clinchGap = trailerMax - lead; // trailer needs to outscore leader by >this over the rest; if <0 already clinched
+  const magicHtml = `
+    <div class="standings-card" style="border-color:${stillPossible ? 'rgba(243,156,18,0.3)' : 'rgba(46,204,113,0.4)'}">
+      <div style="font-size:13px;font-weight:700;color:${stillPossible ? '#f9c22e' : '#2ecc71'};margin-bottom:8px">
+        ${stillPossible ? '🎯 Still up for grabs' : '🏆 ' + leader + ' has clinched it'}
+      </div>
+      ${st.remainingCount === 0
+        ? `<div style="font-size:14px;color:#fff;font-weight:700">Tournament complete — ${L.total === B.total ? "it's a tie!" : leader + " wins by " + lead + " pts"}</div>`
+        : stillPossible
+          ? `<div style="font-size:13px;color:rgba(255,255,255,0.8);line-height:1.6">
+              <strong style="color:#fff">${leader}</strong> leads by <strong style="color:#f9c22e">${lead} pts</strong>.<br>
+              <strong>${trailer}</strong> can still gain up to <strong>${trailerMax} pts</strong> over the ${st.remainingCount} remaining match(es) — enough to overturn it.<br>
+              <span style="color:rgba(255,255,255,0.55);font-size:12px">${leader} clinches the moment their lead exceeds ${trailer}'s remaining ceiling.</span>
+            </div>`
+          : `<div style="font-size:13px;color:rgba(255,255,255,0.8);line-height:1.6">
+              <strong style="color:#fff">${leader}</strong> leads by <strong style="color:#2ecc71">${lead} pts</strong> with only <strong>${trailerMax} pts</strong> left for ${trailer} to chase. Mathematically out of reach.
+            </div>`
+      }
+    </div>`;
+
+  // ── Gap attribution ──
+  // Where is the leader's advantage coming from? Compare weighted category totals.
+  const cats = [
+    { key: "exact", label: "Exact scores" },
+    { key: "winner", label: "Winner calls" },
+    { key: "draw", label: "Draw calls" },
+    { key: "penalty", label: "Penalty calls" },
+    { key: "redCard", label: "Red card calls" },
+  ];
+  const catDiffs = cats.map(c => ({ ...c, diff: (L.wcat[c.key]||0) - (B.wcat[c.key]||0) }))
+    .filter(c => Math.abs(c.diff) > 0)
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  let gapHtml = "";
+  if (catDiffs.length > 0 && st.scoredMatches > 0) {
+    gapHtml = `
+      <div class="standings-card">
+        <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:10px;line-height:1.5">
+          Net points each category contributes to the gap. ${leader} leads overall — green bars are categories helping the leader, red are where the trailer claws back.
+        </div>
+        ${catDiffs.map(c => {
+          const favorsLeader = (leader === "Luis" && c.diff > 0) || (leader === "Bibi" && c.diff < 0);
+          const mag = Math.abs(c.diff);
+          const maxDiff = Math.max(...catDiffs.map(d => Math.abs(d.diff)), 1);
+          const w = (mag / maxDiff) * 100;
+          const who = c.diff > 0 ? "Luis" : "Bibi";
+          return `
+            <div style="margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+                <span style="color:rgba(255,255,255,0.7);font-weight:600">${c.label}</span>
+                <span style="color:${favorsLeader ? '#2ecc71' : '#e74c3c'};font-weight:700">${who} +${mag}</span>
+              </div>
+              <div style="height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${w}%;background:${favorsLeader ? '#2ecc71' : '#e74c3c'};border-radius:4px"></div>
+              </div>
+            </div>`;
+        }).join("")}
+      </div>`;
+  }
+
   return `
     <div style="display:flex;gap:10px;margin-bottom:4px;font-size:11px;color:rgba(255,255,255,0.4);align-items:center">
       <span><span style="display:inline-block;width:10px;height:10px;background:#3498db;border-radius:2px;margin-right:4px"></span>Luis</span>
       <span><span style="display:inline-block;width:10px;height:10px;background:#9b59b6;border-radius:2px;margin-right:4px"></span>Bibi</span>
     </div>
+
+    <div class="section-title">Magic Number 🎯</div>
+    ${magicHtml}
+
+    <div class="section-title">Where the Gap Came From 🔍</div>
+    ${gapHtml || '<div class="standings-card" style="text-align:center;color:rgba(255,255,255,0.35);font-size:13px">Dead even so far — no gap to attribute.</div>'}
+
+    <div class="section-title">Confederation Lean 🌎</div>
+    ${renderConfederationAnalysis(L, B)}
 
     <div class="section-title">Points by Category</div>
     <div class="standings-card">
@@ -1590,6 +1729,64 @@ function topScoreline(counts) {
 
 function avgClose(sum, n) {
   return n > 0 ? (sum / n).toFixed(1) : "—";
+}
+
+// Confederation lean: goals predicted + win-pick share + win-pick accuracy per confederation
+function renderConfederationAnalysis(L, B) {
+  // Only show confederations that appear in either player's data
+  const confs = CONFED_LIST.filter(c => (L.confed[c] || B.confed[c]));
+  if (confs.length === 0) {
+    return '<div class="standings-card" style="text-align:center;color:rgba(255,255,255,0.35);font-size:13px">No predictions yet to analyze.</div>';
+  }
+
+  const lTotalGoals = CONFED_LIST.reduce((s,c) => s + (L.confed[c]?.goalsPredicted||0), 0) || 1;
+  const bTotalGoals = CONFED_LIST.reduce((s,c) => s + (B.confed[c]?.goalsPredicted||0), 0) || 1;
+  const lTotalWins = CONFED_LIST.reduce((s,c) => s + (L.confed[c]?.winsPicked||0), 0) || 1;
+  const bTotalWins = CONFED_LIST.reduce((s,c) => s + (B.confed[c]?.winsPicked||0), 0) || 1;
+
+  const rows = confs.map(c => {
+    const lc = L.confed[c] || {}, bc = B.confed[c] || {};
+    const lGoalShare = Math.round(((lc.goalsPredicted||0) / lTotalGoals) * 100);
+    const bGoalShare = Math.round(((bc.goalsPredicted||0) / bTotalGoals) * 100);
+    const lWinShare = Math.round(((lc.winsPicked||0) / lTotalWins) * 100);
+    const bWinShare = Math.round(((bc.winsPicked||0) / bTotalWins) * 100);
+    const lWinAcc = lc.winPicksTotal > 0 ? Math.round((lc.winPicksCorrect/lc.winPicksTotal)*100) : null;
+    const bWinAcc = bc.winPicksTotal > 0 ? Math.round((bc.winPicksCorrect/bc.winPicksTotal)*100) : null;
+    return `
+      <div style="padding:11px 0;border-bottom:1px solid rgba(255,255,255,0.05)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+          <span style="width:11px;height:11px;border-radius:3px;background:${CONFED_COLORS[c]||'#777'};display:inline-block"></span>
+          <span style="font-size:13px;font-weight:700;color:#fff">${c}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 14px;font-size:11px">
+          <div style="color:rgba(255,255,255,0.5)">Goals predicted</div>
+          <div style="text-align:right"><strong style="color:#5dade2">${lc.goalsPredicted||0}</strong> <span style="color:rgba(255,255,255,0.3)">(${lGoalShare}%)</span> · <strong style="color:#bb8fce">${bc.goalsPredicted||0}</strong> <span style="color:rgba(255,255,255,0.3)">(${bGoalShare}%)</span></div>
+          <div style="color:rgba(255,255,255,0.5)">Picked to win</div>
+          <div style="text-align:right"><strong style="color:#5dade2">${lc.winsPicked||0}</strong> <span style="color:rgba(255,255,255,0.3)">(${lWinShare}%)</span> · <strong style="color:#bb8fce">${bc.winsPicked||0}</strong> <span style="color:rgba(255,255,255,0.3)">(${bWinShare}%)</span></div>
+          <div style="color:rgba(255,255,255,0.5)">Win-pick accuracy</div>
+          <div style="text-align:right"><strong style="color:#5dade2">${lWinAcc===null?'—':lWinAcc+'%'}</strong> · <strong style="color:#bb8fce">${bWinAcc===null?'—':bWinAcc+'%'}</strong></div>
+        </div>
+      </div>`;
+  }).join("");
+
+  // Spotlight: each player's most-favored confederation by goals
+  const favOf = (player) => {
+    let best = null, bestG = -1;
+    CONFED_LIST.forEach(c => { const g = player.confed[c]?.goalsPredicted||0; if (g > bestG) { bestG = g; best = c; } });
+    return best;
+  };
+  const lFav = favOf(L), bFav = favOf(B);
+
+  return `
+    <div class="standings-card">
+      <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:10px;line-height:1.5">
+        How your predictions lean by confederation. <strong style="color:#5dade2">Luis</strong> · <strong style="color:#bb8fce">Bibi</strong>. Share = % of your total across all confederations.
+      </div>
+      ${rows}
+      <div style="margin-top:10px;font-size:12px;color:rgba(255,255,255,0.7);line-height:1.6">
+        🎯 Most-backed: Luis leans <strong style="color:${CONFED_COLORS[lFav]||'#fff'}">${lFav||'—'}</strong>, Bibi leans <strong style="color:${CONFED_COLORS[bFav]||'#fff'}">${bFav||'—'}</strong>.
+      </div>
+    </div>`;
 }
 
 // Inline SVG cumulative line chart: Luis (blue) vs Bibi (purple) over scored matches
