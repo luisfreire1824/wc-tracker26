@@ -1307,9 +1307,21 @@ function computeStats() {
   let totalGoalsActual = 0, scoredMatches = 0;
   let biggestSwing = { diff: 0, match: null, winner: null };
 
-  allMatches().forEach(m => {
+  // Process matches in chronological order for streaks + cumulative timeline
+  const ordered = allMatches().filter(m => (state.results[m.id]||{}).entered)
+    .sort((a, b) => {
+      const da = matchDate(a), db = matchDate(b);
+      if (da && db && da.getTime() !== db.getTime()) return da - db;
+      return a.id - b.id;
+    });
+
+  let cumL = 0, cumB = 0;
+  const timeline = []; // { label, luis, bibi } cumulative after each scored match
+  let curStreak = { who: null, len: 0 };
+  let bestStreak = { luis: 0, bibi: 0 };
+
+  ordered.forEach(m => {
     const result = state.results[m.id];
-    if (!result || !result.entered) return;
     const pred = state.predictions[m.id] || {};
     const pts = {};
     const mult = stageMultiplier(matchStage(m));
@@ -1321,14 +1333,12 @@ function computeStats() {
       s.predicted++;
       let matchPts = 0;
 
-      // Exact scores (category breakdown tracks BASE points; matchPts tracks weighted)
       const hitA = String(p.scoreA) === String(result.scoreA);
       const hitB = String(p.scoreB) === String(result.scoreB);
       if (hitA) { s.cat.exactA += SCORING.scoreA; s.hits.exactA++; matchPts += SCORING.scoreA; }
       if (hitB) { s.cat.exactB += SCORING.scoreB; s.hits.exactB++; matchPts += SCORING.scoreB; }
       if (hitA && hitB) s.perfectScores++;
 
-      // Winner / draw
       if (result.draw === "Y") {
         if (p.draw === "Y") { s.cat.draw += SCORING.draw; s.hits.draw++; matchPts += SCORING.draw; }
         s.drawGames++;
@@ -1338,14 +1348,28 @@ function computeStats() {
         s.decisiveGames++;
       }
 
-      // Penalty
       if (p.penalty === result.penalty) { s.cat.penalty += SCORING.penalty; s.hits.penalty++; matchPts += SCORING.penalty; }
 
-      // Red card (only when both sides have the field)
       if (p.redCard !== undefined && p.redCard !== "" && result.redCard !== undefined && result.redCard !== "") {
         s.redCardEligible++;
         if (p.redCard === result.redCard) { s.cat.redCard += (SCORING.redCard || 0); s.hits.redCard++; matchPts += (SCORING.redCard || 0); }
       }
+
+      // ── Fingerprint: predicted goals, scorelines, draw tendency ──
+      const pa = Number(p.scoreA), pb = Number(p.scoreB);
+      if (!isNaN(pa) && !isNaN(pb)) {
+        s.fp.totalGoalsPredicted += pa + pb;
+        s.fp.scorelineCount[pa + "-" + pb] = (s.fp.scorelineCount[pa + "-" + pb] || 0) + 1;
+        if (pa === pb) s.fp.drawsPredicted++;
+        // Closeness: how far off the aggregate scoreline was
+        const sa = Number(result.scoreA), sb = Number(result.scoreB);
+        s.close.totalGoalDiffError += Math.abs((pa - pb) - (sa - sb));
+        s.close.totalGoalError += Math.abs(pa - sa) + Math.abs(pb - sb);
+        s.close.n++;
+      }
+      // Calibration: when they said "Y" for penalty/red/draw, how often right
+      if (p.penalty === "Y") { s.cal.penYesPredicted++; if (result.penalty === "Y") s.cal.penYesCorrect++; }
+      if (p.redCard === "Y") { s.cal.redYesPredicted++; if (result.redCard === "Y") s.cal.redYesCorrect++; }
 
       const weighted = matchPts * mult;
       s.total += weighted;
@@ -1354,7 +1378,6 @@ function computeStats() {
       pts[k] = weighted;
     });
 
-    // Head-to-head per match
     if (pts.luis !== undefined && pts.bibi !== undefined) {
       scoredMatches++;
       if (pts.luis > pts.bibi) rowWins.luis++;
@@ -1362,11 +1385,25 @@ function computeStats() {
       else rowWins.tie++;
       const diff = Math.abs(pts.luis - pts.bibi);
       if (diff > biggestSwing.diff) biggestSwing = { diff, match: m, winner: pts.luis > pts.bibi ? "Luis" : "Bibi" };
+
+      // Streak tracking (who won this head-to-head match)
+      const winner = pts.luis > pts.bibi ? "luis" : (pts.bibi > pts.luis ? "bibi" : null);
+      if (winner) {
+        if (curStreak.who === winner) curStreak.len++;
+        else curStreak = { who: winner, len: 1 };
+        if (curStreak.len > bestStreak[winner]) bestStreak[winner] = curStreak.len;
+      } else {
+        curStreak = { who: null, len: 0 };
+      }
+
+      // Cumulative timeline point
+      cumL += pts.luis; cumB += pts.bibi;
+      timeline.push({ label: m.date || ("#"+m.id), luis: cumL, bibi: cumB });
     }
     totalGoalsActual += Number(result.scoreA) + Number(result.scoreB);
   });
 
-  return { players, rowWins, scoredMatches, totalGoalsActual, biggestSwing };
+  return { players, rowWins, scoredMatches, totalGoalsActual, biggestSwing, timeline, bestStreak, curStreak };
 }
 
 function emptyPlayerStats() {
@@ -1377,6 +1414,9 @@ function emptyPlayerStats() {
     hits: { exactA: 0, exactB: 0, winner: 0, draw: 0, penalty: 0, redCard: 0 },
     redCardEligible: 0,
     bestMatch: { pts: -1, match: null },
+    fp: { totalGoalsPredicted: 0, drawsPredicted: 0, scorelineCount: {} },
+    cal: { penYesPredicted: 0, penYesCorrect: 0, redYesPredicted: 0, redYesCorrect: 0 },
+    close: { totalGoalDiffError: 0, totalGoalError: 0, n: 0 },
   };
 }
 
@@ -1465,6 +1505,49 @@ function renderStats() {
       <div style="font-size:11px;color:rgba(255,255,255,0.35);text-align:center">Match-by-match point battles (${st.scoredMatches} scored)</div>
     </div>
 
+    <div class="section-title">Cumulative Lead 📈</div>
+    <div class="standings-card">
+      ${renderTimelineChart(st.timeline)}
+    </div>
+
+    <div class="section-title">Streaks & Momentum 🔥</div>
+    <div class="standings-card">
+      ${funFact("Longest win streak", `Luis: ${st.bestStreak.luis} · Bibi: ${st.bestStreak.bibi}`, "Most consecutive matches out-scoring the other")}
+      ${st.curStreak.who ? funFact("Current streak", `${st.curStreak.who === 'luis' ? 'Luis' : 'Bibi'} — ${st.curStreak.len} in a row`, "Active head-to-head run") : funFact("Current streak", "None", "Last match was a tie")}
+    </div>
+
+    <div class="section-title">Prediction Fingerprint 🔮</div>
+    <div class="standings-card">
+      ${fpRow("Avg goals predicted / match", L.fp.totalGoalsPredicted, L.predicted, B.fp.totalGoalsPredicted, B.predicted, 2)}
+      ${fpRow("Draws predicted", L.fp.drawsPredicted, L.predicted, B.fp.drawsPredicted, B.predicted, 0, true)}
+      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:13px">
+        <span style="color:rgba(255,255,255,0.65)">Go-to scoreline</span>
+        <span><strong style="color:#5dade2">${topScoreline(L.fp.scorelineCount)}</strong> · <strong style="color:#bb8fce">${topScoreline(B.fp.scorelineCount)}</strong></span>
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,0.3);margin-top:6px;line-height:1.5">Your most-predicted exact scoreline — reveals if you lean cagey (1-0) or open (2-1).</div>
+    </div>
+
+    <div class="section-title">Calibration 🎚️</div>
+    <div class="standings-card">
+      <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:8px;line-height:1.5">When you call "Yes" on a penalty or red card, how often it actually happens. Low % = over-predicting drama.</div>
+      ${accRow("Penalty 'Yes' hit rate", L.cal.penYesCorrect, L.cal.penYesPredicted, B.cal.penYesCorrect, B.cal.penYesPredicted)}
+      ${accRow("Red card 'Yes' hit rate", L.cal.redYesCorrect, L.cal.redYesPredicted, B.cal.redYesCorrect, B.cal.redYesPredicted)}
+    </div>
+
+    <div class="section-title">Closeness 📏</div>
+    <div class="standings-card">
+      <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:8px;line-height:1.5">How near-miss your scorelines are, even when not exact. Lower = closer.</div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.05)">
+        <span style="color:rgba(255,255,255,0.65)">Avg goal error / match</span>
+        <span><strong style="color:#5dade2">${avgClose(L.close.totalGoalError, L.close.n)}</strong> · <strong style="color:#bb8fce">${avgClose(B.close.totalGoalError, B.close.n)}</strong></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:13px">
+        <span style="color:rgba(255,255,255,0.65)">Avg margin error / match</span>
+        <span><strong style="color:#5dade2">${avgClose(L.close.totalGoalDiffError, L.close.n)}</strong> · <strong style="color:#bb8fce">${avgClose(B.close.totalGoalDiffError, B.close.n)}</strong></span>
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,0.3);margin-top:6px;line-height:1.5">Goal error = total goals off across both teams. Margin error = how far off the win/draw margin was.</div>
+    </div>
+
     <div class="section-title">Fun Facts</div>
     <div class="standings-card">
       ${funFact("🎯 Perfect scorelines", `Luis: ${L.perfectScores} · Bibi: ${B.perfectScores}`, "Both teams' goals nailed exactly")}
@@ -1485,6 +1568,60 @@ function funFact(title, value, sub) {
         <span style="font-size:13px;font-weight:700;color:#f9c22e;text-align:right">${value}</span>
       </div>
       ${sub ? `<div style="font-size:10px;color:rgba(255,255,255,0.3);margin-top:2px">${sub}</div>` : ""}
+    </div>`;
+}
+
+function fpRow(label, lSum, lN, bSum, bN, decimals, raw) {
+  const lv = raw ? lSum : (lN > 0 ? (lSum / lN).toFixed(decimals) : "—");
+  const bv = raw ? bSum : (bN > 0 ? (bSum / bN).toFixed(decimals) : "—");
+  return `
+    <div style="display:flex;justify-content:space-between;padding:8px 0;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.05)">
+      <span style="color:rgba(255,255,255,0.65)">${label}</span>
+      <span><strong style="color:#5dade2">${lv}</strong> · <strong style="color:#bb8fce">${bv}</strong></span>
+    </div>`;
+}
+
+function topScoreline(counts) {
+  const keys = Object.keys(counts);
+  if (keys.length === 0) return "—";
+  keys.sort((a, b) => counts[b] - counts[a]);
+  return keys[0] + " (×" + counts[keys[0]] + ")";
+}
+
+function avgClose(sum, n) {
+  return n > 0 ? (sum / n).toFixed(1) : "—";
+}
+
+// Inline SVG cumulative line chart: Luis (blue) vs Bibi (purple) over scored matches
+function renderTimelineChart(timeline) {
+  if (!timeline || timeline.length < 2) {
+    return '<div style="text-align:center;color:rgba(255,255,255,0.35);font-size:13px;padding:12px">Need at least 2 scored matches to chart the lead.</div>';
+  }
+  const W = 300, H = 140, padL = 8, padR = 8, padT = 10, padB = 18;
+  const n = timeline.length;
+  const maxV = Math.max(...timeline.map(p => Math.max(p.luis, p.bibi)), 1);
+  const x = i => padL + (i / (n - 1)) * (W - padL - padR);
+  const y = v => padT + (1 - v / maxV) * (H - padT - padB);
+  const path = (key, color) => {
+    const d = timeline.map((p, i) => (i === 0 ? "M" : "L") + x(i).toFixed(1) + " " + y(p[key]).toFixed(1)).join(" ");
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>`;
+  };
+  const lastL = timeline[n-1].luis, lastB = timeline[n-1].bibi;
+  return `
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+      <line x1="${padL}" y1="${H-padB}" x2="${W-padR}" y2="${H-padB}" stroke="rgba(255,255,255,0.1)" stroke-width="1"/>
+      ${path("luis", "#3498db")}
+      ${path("bibi", "#9b59b6")}
+      <circle cx="${x(n-1)}" cy="${y(lastL)}" r="3" fill="#3498db"/>
+      <circle cx="${x(n-1)}" cy="${y(lastB)}" r="3" fill="#9b59b6"/>
+    </svg>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px">
+      <span>${esc(timeline[0].label)}</span>
+      <span>${esc(timeline[n-1].label)}</span>
+    </div>
+    <div style="display:flex;gap:14px;justify-content:center;margin-top:8px;font-size:12px">
+      <span style="color:#5dade2;font-weight:700">● Luis ${lastL}</span>
+      <span style="color:#bb8fce;font-weight:700">● Bibi ${lastB}</span>
     </div>`;
 }
 
