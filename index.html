@@ -261,6 +261,7 @@ let completedSort = "recent"; // "recent" | "match"
 let completedFilter = "";     // team name filter ("" = all)
 let completedConfFilter = "";  // confederation filter ("" = all)
 let collapsedStages = {};      // { stageName: true } when collapsed
+let chartWindow = "all";       // "5" | "10" | "all" for cumulative lead chart
 
 function loadLocalCache() {
   try {
@@ -837,6 +838,7 @@ window.setCompletedSort = function(s) { completedSort = s; render(); };
 window.setCompletedFilter = function(v) { completedFilter = v; render(); };
 window.setCompletedConfFilter = function(v) { completedConfFilter = v; completedFilter = ""; render(); };
 window.toggleStageCollapse = function(stage) { collapsedStages[stage] = !collapsedStages[stage]; render(); };
+window.setChartWindow = function(w) { chartWindow = w; render(); };
 
 window.updateMultiplier = async function(stage, value) {
   const num = Number(value);
@@ -1174,6 +1176,83 @@ function renderCard(m) {
   `;
 }
 
+// Magic Number + Gap attribution — the "how's the bet going and why" breakdown (Standings tab)
+function renderLeadBreakdown() {
+  const st = computeStats();
+  const L = st.players.luis, B = st.players.bibi;
+  if (st.scoredMatches === 0) return "";
+
+  // ── Magic number ──
+  const leader = L.total >= B.total ? "Luis" : "Bibi";
+  const trailer = leader === "Luis" ? "Bibi" : "Luis";
+  const lead = Math.abs(L.total - B.total);
+  const trailerMax = leader === "Luis" ? st.remainingMaxBibi : st.remainingMaxLuis;
+  const stillPossible = trailerMax >= lead;
+  const magicHtml = `
+    <div class="standings-card" style="border-color:${stillPossible ? 'rgba(243,156,18,0.3)' : 'rgba(46,204,113,0.4)'}">
+      <div style="font-size:13px;font-weight:700;color:${stillPossible ? '#f9c22e' : '#2ecc71'};margin-bottom:8px">
+        ${stillPossible ? '🎯 Still up for grabs' : '🏆 ' + leader + ' has clinched it'}
+      </div>
+      ${st.remainingCount === 0
+        ? `<div style="font-size:14px;color:#fff;font-weight:700">Tournament complete — ${L.total === B.total ? "it's a tie!" : leader + " wins by " + lead + " pts"}</div>`
+        : stillPossible
+          ? `<div style="font-size:13px;color:rgba(255,255,255,0.8);line-height:1.6">
+              <strong style="color:#fff">${leader}</strong> leads by <strong style="color:#f9c22e">${lead} pts</strong>.<br>
+              <strong>${trailer}</strong> can still gain up to <strong>${trailerMax} pts</strong> over the ${st.remainingCount} remaining match(es) — enough to overturn it.<br>
+              <span style="color:rgba(255,255,255,0.55);font-size:12px">${leader} clinches the moment their lead exceeds ${trailer}'s remaining ceiling.</span>
+            </div>`
+          : `<div style="font-size:13px;color:rgba(255,255,255,0.8);line-height:1.6">
+              <strong style="color:#fff">${leader}</strong> leads by <strong style="color:#2ecc71">${lead} pts</strong> with only <strong>${trailerMax} pts</strong> left for ${trailer} to chase. Mathematically out of reach.
+            </div>`
+      }
+    </div>`;
+
+  // ── Gap attribution ──
+  const cats = [
+    { key: "exact", label: "Exact scores" },
+    { key: "winner", label: "Winner calls" },
+    { key: "draw", label: "Draw calls" },
+    { key: "penalty", label: "Penalty calls" },
+    { key: "redCard", label: "Red card calls" },
+  ];
+  const catDiffs = cats.map(c => ({ ...c, diff: (L.wcat[c.key]||0) - (B.wcat[c.key]||0) }))
+    .filter(c => Math.abs(c.diff) > 0)
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  let gapHtml = "";
+  if (catDiffs.length > 0) {
+    gapHtml = `
+      <div class="standings-card">
+        <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:10px;line-height:1.5">
+          Net points each category contributes to the gap. ${leader} leads overall — green bars help the leader, red are where the trailer claws back.
+        </div>
+        ${catDiffs.map(c => {
+          const favorsLeader = (leader === "Luis" && c.diff > 0) || (leader === "Bibi" && c.diff < 0);
+          const mag = Math.abs(c.diff);
+          const maxDiff = Math.max(...catDiffs.map(d => Math.abs(d.diff)), 1);
+          const w = (mag / maxDiff) * 100;
+          const who = c.diff > 0 ? "Luis" : "Bibi";
+          return `
+            <div style="margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
+                <span style="color:rgba(255,255,255,0.7);font-weight:600">${c.label}</span>
+                <span style="color:${favorsLeader ? '#2ecc71' : '#e74c3c'};font-weight:700">${who} +${mag}</span>
+              </div>
+              <div style="height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:${w}%;background:${favorsLeader ? '#2ecc71' : '#e74c3c'};border-radius:4px"></div>
+              </div>
+            </div>`;
+        }).join("")}
+      </div>`;
+  }
+
+  return `
+    <div class="section-title">Magic Number 🎯</div>
+    ${magicHtml}
+    <div class="section-title">Where the Gap Came From 🔍</div>
+    ${gapHtml || '<div class="standings-card" style="text-align:center;color:rgba(255,255,255,0.35);font-size:13px">Dead even so far — no gap to attribute.</div>'}
+  `;
+}
+
 function renderStandings(t, completedCount) {
   const luisLeading = t.luis > t.bibi;
   const bibiLeading = t.bibi > t.luis;
@@ -1200,10 +1279,40 @@ function renderStandings(t, completedCount) {
           </div>`
       }
     </div>
+    ${renderLeadBreakdown()}
     <div class="standings-card">
       <div class="result-label" style="margin-bottom:8px">Progress</div>
       <div class="progress-row"><span style="color:rgba(255,255,255,0.6)">Group Stage</span><span style="font-weight:700">${completedCount} / ${GROUP_MATCHES.length}</span></div>
       <div class="progress-bar"><div class="progress-fill" style="width:${(completedCount/GROUP_MATCHES.length)*100}%"></div></div>
+    </div>
+    ${renderCumulativeLead()}
+  `;
+}
+
+// Cumulative lead chart with a time-window filter (last 5 / 10 / all)
+function renderCumulativeLead() {
+  const st = computeStats();
+  let timeline = st.timeline || [];
+  const full = timeline.length;
+
+  // Apply window: keep only the last N points, but the cumulative line should still
+  // start from the running totals at that point (so we re-baseline to show recent trend).
+  let windowed = timeline;
+  if (chartWindow === "5") windowed = timeline.slice(-5);
+  else if (chartWindow === "10") windowed = timeline.slice(-10);
+
+  const btn = (val, label) => `<button onclick="setChartWindow('${val}')" style="flex:1;height:30px;border-radius:6px;border:1px solid ${chartWindow===val?'#f9c22e':'rgba(255,255,255,0.12)'};background:${chartWindow===val?'rgba(249,194,46,0.13)':'rgba(255,255,255,0.04)'};color:${chartWindow===val?'#f9c22e':'rgba(255,255,255,0.5)'};font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">${label}</button>`;
+
+  return `
+    <div class="section-title">Cumulative Lead 📈</div>
+    <div class="standings-card">
+      <div style="display:flex;gap:5px;margin-bottom:12px">
+        ${btn("5","Last 5")}
+        ${btn("10","Last 10")}
+        ${btn("all","All")}
+      </div>
+      ${renderTimelineChart(windowed)}
+      ${full > windowed.length ? `<div style="font-size:10px;color:rgba(255,255,255,0.3);text-align:center;margin-top:8px">Showing last ${windowed.length} of ${full} scored matches</div>` : ""}
     </div>
   `;
 }
@@ -1786,86 +1895,11 @@ function renderStats() {
 
   const avgGoals = st.scoredMatches > 0 ? (st.totalGoalsActual / st.scoredMatches).toFixed(1) : "—";
 
-  // ── Magic number logic ──
-  const leader = L.total >= B.total ? "Luis" : "Bibi";
-  const trailer = leader === "Luis" ? "Bibi" : "Luis";
-  const lead = Math.abs(L.total - B.total);
-  const trailerMax = leader === "Luis" ? st.remainingMaxBibi : st.remainingMaxLuis;
-  // Can the trailer still catch up? They can gain at most trailerMax while leader gains 0.
-  const stillPossible = trailerMax >= lead;
-  // "Magic number" = points the LEADER needs to bank to make it mathematically impossible for trailer.
-  // If leader gains G and trailer gains their max, leader is safe when (leadNow + G) > trailerMax_remaining... 
-  // Simpler clinch framing: leader clinches when current lead > trailer's remaining max.
-  const clinchGap = trailerMax - lead; // trailer needs to outscore leader by >this over the rest; if <0 already clinched
-  const magicHtml = `
-    <div class="standings-card" style="border-color:${stillPossible ? 'rgba(243,156,18,0.3)' : 'rgba(46,204,113,0.4)'}">
-      <div style="font-size:13px;font-weight:700;color:${stillPossible ? '#f9c22e' : '#2ecc71'};margin-bottom:8px">
-        ${stillPossible ? '🎯 Still up for grabs' : '🏆 ' + leader + ' has clinched it'}
-      </div>
-      ${st.remainingCount === 0
-        ? `<div style="font-size:14px;color:#fff;font-weight:700">Tournament complete — ${L.total === B.total ? "it's a tie!" : leader + " wins by " + lead + " pts"}</div>`
-        : stillPossible
-          ? `<div style="font-size:13px;color:rgba(255,255,255,0.8);line-height:1.6">
-              <strong style="color:#fff">${leader}</strong> leads by <strong style="color:#f9c22e">${lead} pts</strong>.<br>
-              <strong>${trailer}</strong> can still gain up to <strong>${trailerMax} pts</strong> over the ${st.remainingCount} remaining match(es) — enough to overturn it.<br>
-              <span style="color:rgba(255,255,255,0.55);font-size:12px">${leader} clinches the moment their lead exceeds ${trailer}'s remaining ceiling.</span>
-            </div>`
-          : `<div style="font-size:13px;color:rgba(255,255,255,0.8);line-height:1.6">
-              <strong style="color:#fff">${leader}</strong> leads by <strong style="color:#2ecc71">${lead} pts</strong> with only <strong>${trailerMax} pts</strong> left for ${trailer} to chase. Mathematically out of reach.
-            </div>`
-      }
-    </div>`;
-
-  // ── Gap attribution ──
-  // Where is the leader's advantage coming from? Compare weighted category totals.
-  const cats = [
-    { key: "exact", label: "Exact scores" },
-    { key: "winner", label: "Winner calls" },
-    { key: "draw", label: "Draw calls" },
-    { key: "penalty", label: "Penalty calls" },
-    { key: "redCard", label: "Red card calls" },
-  ];
-  const catDiffs = cats.map(c => ({ ...c, diff: (L.wcat[c.key]||0) - (B.wcat[c.key]||0) }))
-    .filter(c => Math.abs(c.diff) > 0)
-    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
-  let gapHtml = "";
-  if (catDiffs.length > 0 && st.scoredMatches > 0) {
-    gapHtml = `
-      <div class="standings-card">
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:10px;line-height:1.5">
-          Net points each category contributes to the gap. ${leader} leads overall — green bars are categories helping the leader, red are where the trailer claws back.
-        </div>
-        ${catDiffs.map(c => {
-          const favorsLeader = (leader === "Luis" && c.diff > 0) || (leader === "Bibi" && c.diff < 0);
-          const mag = Math.abs(c.diff);
-          const maxDiff = Math.max(...catDiffs.map(d => Math.abs(d.diff)), 1);
-          const w = (mag / maxDiff) * 100;
-          const who = c.diff > 0 ? "Luis" : "Bibi";
-          return `
-            <div style="margin-bottom:10px">
-              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px">
-                <span style="color:rgba(255,255,255,0.7);font-weight:600">${c.label}</span>
-                <span style="color:${favorsLeader ? '#2ecc71' : '#e74c3c'};font-weight:700">${who} +${mag}</span>
-              </div>
-              <div style="height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden">
-                <div style="height:100%;width:${w}%;background:${favorsLeader ? '#2ecc71' : '#e74c3c'};border-radius:4px"></div>
-              </div>
-            </div>`;
-        }).join("")}
-      </div>`;
-  }
-
   return `
     <div style="display:flex;gap:10px;margin-bottom:4px;font-size:11px;color:rgba(255,255,255,0.4);align-items:center">
       <span><span style="display:inline-block;width:10px;height:10px;background:#3498db;border-radius:2px;margin-right:4px"></span>Luis</span>
       <span><span style="display:inline-block;width:10px;height:10px;background:#9b59b6;border-radius:2px;margin-right:4px"></span>Bibi</span>
     </div>
-
-    <div class="section-title">Magic Number 🎯</div>
-    ${magicHtml}
-
-    <div class="section-title">Where the Gap Came From 🔍</div>
-    ${gapHtml || '<div class="standings-card" style="text-align:center;color:rgba(255,255,255,0.35);font-size:13px">Dead even so far — no gap to attribute.</div>'}
 
     <div class="section-title">Confederation Lean 🌎</div>
     ${renderConfederationAnalysis(L, B)}
@@ -1897,11 +1931,6 @@ function renderStats() {
         <div><div style="font-size:24px;font-weight:900;color:#bb8fce">${st.rowWins.bibi}</div><div style="font-size:11px;color:rgba(255,255,255,0.4)">Bibi wins</div></div>
       </div>
       <div style="font-size:11px;color:rgba(255,255,255,0.35);text-align:center">Match-by-match point battles (${st.scoredMatches} scored)</div>
-    </div>
-
-    <div class="section-title">Cumulative Lead 📈</div>
-    <div class="standings-card">
-      ${renderTimelineChart(st.timeline)}
     </div>
 
     <div class="section-title">Streaks & Momentum 🔥</div>
@@ -2051,9 +2080,14 @@ function renderTimelineChart(timeline) {
   }
   const W = 300, H = 140, padL = 8, padR = 8, padT = 10, padB = 18;
   const n = timeline.length;
-  const maxV = Math.max(...timeline.map(p => Math.max(p.luis, p.bibi)), 1);
-  const x = i => padL + (i / (n - 1)) * (W - padL - padR);
-  const y = v => padT + (1 - v / maxV) * (H - padT - padB);
+  const allVals = timeline.flatMap(p => [p.luis, p.bibi]);
+  const maxV = Math.max(...allVals, 1);
+  let minV = Math.min(...allVals, 0);
+  const range = maxV - minV || 1;
+  minV = Math.max(0, minV - range * 0.08);
+  const top = maxV + range * 0.08;
+  const x = i => padL + (n === 1 ? 0.5 : (i / (n - 1))) * (W - padL - padR);
+  const y = v => padT + (1 - (v - minV) / (top - minV)) * (H - padT - padB);
   const path = (key, color) => {
     const d = timeline.map((p, i) => (i === 0 ? "M" : "L") + x(i).toFixed(1) + " " + y(p[key]).toFixed(1)).join(" ");
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round"/>`;
