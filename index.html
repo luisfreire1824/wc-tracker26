@@ -260,6 +260,7 @@ let officialResults = null;   // { matchId: {scoreA, scoreB, penalty, redCard} }
 let completedSort = "recent"; // "recent" | "match"
 let completedFilter = "";     // team name filter ("" = all)
 let completedConfFilter = "";  // confederation filter ("" = all)
+let collapsedStages = {};      // { stageName: true } when collapsed
 
 function loadLocalCache() {
   try {
@@ -353,10 +354,8 @@ function startFirestoreSync() {
 
 // Rebuild knockout matches from current standings + saved third-place assignments
 function refreshKnockout() {
-  if (!groupStageComplete()) {
-    state.knockout.matches = [];
-    return;
-  }
+  // Build progressively: resolved slots fill from standings, unresolved stay as labels.
+  // We always attempt the build so confirmed teams appear as soon as their group firms up.
   const built = buildR32();
   state.knockout.matches = built.matches;
 }
@@ -517,11 +516,18 @@ const R32_TEMPLATE = [
   { id:116, match:88, date:"Jul 3",  time:"2:00 PM",  venue:"Dallas",        a:{type:"R",group:"D"}, b:{type:"R",group:"G"} },
 ];
 
-// Resolve a slot side to a team name from standings (null if not yet determined)
+// Is a specific group's matches all entered?
+function groupComplete(g) {
+  return GROUP_MATCHES.filter(m => m.group === g).every(m => (state.results[m.id]||{}).entered);
+}
+
+// Resolve a slot side to a team name from standings.
+// W/R only resolve once the GROUP is complete (a current leader isn't the confirmed winner).
+// Returns null if not yet determined.
 function resolveSlot(side, standings) {
   if (!side) return null;
-  if (side.type === "W") return standings[side.group]?.[0]?.team || null;
-  if (side.type === "R") return standings[side.group]?.[1]?.team || null;
+  if (side.type === "W") return groupComplete(side.group) ? (standings[side.group]?.[0]?.team || null) : null;
+  if (side.type === "R") return groupComplete(side.group) ? (standings[side.group]?.[1]?.team || null) : null;
   if (side.type === "3RD") return side.assigned || null; // user-assigned third place
   return null;
 }
@@ -830,6 +836,7 @@ window.applyOfficialFix = async function(id) {
 window.setCompletedSort = function(s) { completedSort = s; render(); };
 window.setCompletedFilter = function(v) { completedFilter = v; render(); };
 window.setCompletedConfFilter = function(v) { completedConfFilter = v; completedFilter = ""; render(); };
+window.toggleStageCollapse = function(stage) { collapsedStages[stage] = !collapsedStages[stage]; render(); };
 
 window.updateMultiplier = async function(stage, value) {
   const num = Number(value);
@@ -1333,28 +1340,62 @@ function renderCompleted(completed) {
   `;
 
   const filterLabel = [completedFilter, completedConfFilter].filter(Boolean).join(" / ");
-  const cards = list.length === 0
-    ? `<div class="empty-state">No completed matches for ${esc(filterLabel || "this filter")}.</div>`
-    : list.map(renderCard).join("");
+  if (list.length === 0) {
+    return controls + `<div class="empty-state">No completed matches for ${esc(filterLabel || "this filter")}.</div>`;
+  }
 
-  return controls + cards;
+  // Group by stage, in canonical order
+  const STAGE_ORDER = ["Group", "Round of 32", "Round of 16", "Quarter-Final", "Semi-Final", "Third Place", "Final"];
+  const byStage = {};
+  list.forEach(m => {
+    const st = matchStage(m);
+    (byStage[st] = byStage[st] || []).push(m);
+  });
+  // Order: when sorting "Latest", show latest stage first; else canonical order
+  let stages = Object.keys(byStage).sort((a, b) => STAGE_ORDER.indexOf(a) - STAGE_ORDER.indexOf(b));
+  if (completedSort === "recent") stages.reverse();
+
+  const stageLabel = s => s === "Group" ? "Group Stage" : s;
+
+  const sections = stages.map(st => {
+    const matches = byStage[st];
+    const collapsed = !!collapsedStages[st];
+    // flag count within this stage
+    const stageFlagged = matches.filter(m => { const v = validateMatch(m.id); return v && !v.ok; }).length;
+    const header = `
+      <button onclick="toggleStageCollapse('${st.replace(/'/g,"\\\\'")}')" style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px 13px;margin-bottom:${collapsed?'8px':'10px'};cursor:pointer;font-family:inherit">
+        <span style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:13px;color:rgba(255,255,255,0.5);transition:transform 0.15s;display:inline-block;transform:rotate(${collapsed?'-90deg':'0deg'})">▾</span>
+          <span style="font-size:14px;font-weight:700;color:#fff">${esc(stageLabel(st))}</span>
+          <span style="font-size:11px;color:rgba(255,255,255,0.4)">${matches.length}</span>
+          ${stageFlagged > 0 ? `<span style="background:#e74c3c;color:#fff;border-radius:8px;padding:0 6px;font-size:10px;font-weight:700">${stageFlagged}⚠️</span>` : ""}
+        </span>
+      </button>`;
+    const body = collapsed ? "" : matches.map(renderCard).join("");
+    return header + body;
+  });
+
+  return controls + sections.join("");
 }
 
 // ── Bracket tab ───────────────────────────────────────────────────────────────
 function renderBracket() {
   const entered = groupMatchesEntered();
   const complete = groupStageComplete();
+  const standings = computeGroupStandings();
+  const built = buildR32();
 
-  // Not done with groups yet — show progress + standings preview
+  // Header: progress banner + live standings (shown above the bracket until groups finish)
+  let topHtml = "";
   if (!complete) {
-    const standings = computeGroupStandings();
-    return `
+    const resolvedCount = built.matches.filter(m => m.teamAResolved && m.teamBResolved).length;
+    topHtml = `
       <div class="standings-card" style="text-align:center">
-        <div style="font-size:40px;margin-bottom:8px">🗺️</div>
-        <div style="font-size:16px;font-weight:800;margin-bottom:6px">Knockout bracket locked</div>
+        <div style="font-size:36px;margin-bottom:6px">🗺️</div>
+        <div style="font-size:15px;font-weight:800;margin-bottom:6px">Bracket filling in…</div>
         <div style="font-size:13px;color:rgba(255,255,255,0.5);line-height:1.5">
-          The Round of 32 unlocks once all 48 group matches have results entered.<br>
-          <strong style="color:#f9c22e">${entered} / 48</strong> group matches entered.
+          <strong style="color:#f9c22e">${entered} / 48</strong> group matches entered · <strong style="color:#2ecc71">${resolvedCount} / 16</strong> R32 matchups set.<br>
+          Teams lock into the bracket as each group finishes. You can predict any matchup once both teams are confirmed.
         </div>
         <div class="progress-bar" style="margin-top:12px"><div class="progress-fill" style="width:${(entered/48)*100}%"></div></div>
       </div>
@@ -1362,24 +1403,17 @@ function renderBracket() {
       ${renderThirdPlaceRace(standings)}
       <div class="section-title">Live Group Standings</div>
       ${renderStandingsTables(standings)}
-      <div style="font-size:11px;color:rgba(255,255,255,0.3);text-align:center;margin-top:8px;line-height:1.5">
-        Standings update automatically as results come in. Tiebreakers use points → goal difference → goals scored.
-      </div>
     `;
   }
 
-  // Groups complete — build bracket
-  const standings = computeGroupStandings();
-  const built = buildR32();
+  // Third-place assignment UI — only meaningful once ALL groups are done (so the 8 qualifiers are known)
   const thirds = rankedThirdPlace(standings);
   const top8Thirds = thirds.slice(0, 8);
   const thirdNames = top8Thirds.map(t => t.team);
-
-  // Which third-place slots still need assignment?
   const needsAssign = built.thirdSlots - built.thirdAssigned;
 
   let assignHtml = "";
-  if (needsAssign > 0) {
+  if (complete && needsAssign > 0) {
     // Build dropdowns for each 3RD slot
     const slotInputs = [];
     R32_TEMPLATE.forEach(slot => {
@@ -1415,6 +1449,15 @@ function renderBracket() {
     if (m.teamAResolved && m.teamBResolved) {
       return renderCard(m);
     }
+    // Pending card — explain WHY it's not ready
+    let pendingMsg;
+    const aPending = !m.teamAResolved, bPending = !m.teamBResolved;
+    const slotLabel = s => s.type === "3RD" ? "a 3rd-place team" : (s.type === "W" ? "Group " + s.group + " winner" : "Group " + s.group + " runner-up");
+    if ((m.slotA.type === "3RD" && aPending) || (m.slotB.type === "3RD" && bPending)) {
+      pendingMsg = "Awaiting third-place assignment (once all groups finish)";
+    } else {
+      pendingMsg = "Waiting on " + [aPending ? slotLabel(m.slotA) : null, bPending ? slotLabel(m.slotB) : null].filter(Boolean).join(" & ");
+    }
     return `
       <div class="card" style="opacity:0.6">
         <div class="card-header">
@@ -1423,17 +1466,18 @@ function renderBracket() {
         </div>
         <div style="padding:14px;text-align:center;font-size:14px;color:rgba(255,255,255,0.6)">
           ${esc(m.teamA)} <span style="color:rgba(255,255,255,0.3)">vs</span> ${esc(m.teamB)}
-          <div style="font-size:11px;color:rgba(243,156,18,0.8);margin-top:6px">Assign teams above to start predicting</div>
+          <div style="font-size:11px;color:rgba(243,156,18,0.8);margin-top:6px">${pendingMsg}</div>
         </div>
       </div>`;
   });
 
   return `
+    ${topHtml}
     <div class="section-title">Round of 32 ${MULTIPLIERS["Round of 32"]?`· ${MULTIPLIERS["Round of 32"]}× points`:""}</div>
     ${assignHtml}
     ${matchCards.join("")}
     <div style="font-size:11px;color:rgba(255,255,255,0.3);text-align:center;margin-top:8px;line-height:1.5">
-      Winners & runners-up auto-filled from standings. Later rounds (R16 onward) will generate as R32 results come in — coming next.
+      Winners & runners-up fill in as each group finishes. Predict any matchup once both teams are set. Later rounds generate after R32 — coming later.
     </div>
   `;
 }
