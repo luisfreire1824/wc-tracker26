@@ -1004,6 +1004,41 @@ function renderUserSelect() {
   `;
 }
 
+// Get a team's last N results from entered matches (group + knockout), most recent first.
+// Returns array of { opponent, gf, ga, outcome: 'W'|'L'|'D', label }
+function teamRecentForm(teamName, n, excludeMatchId) {
+  const played = allMatches().filter(m => {
+    if (m.id === excludeMatchId) return false;
+    const r = state.results[m.id];
+    return r && r.entered && (m.teamA === teamName || m.teamB === teamName);
+  });
+  // sort by kickoff/date, most recent first
+  played.sort((a, b) => {
+    const ka = kickoffDate(a) || matchDate(a), kb = kickoffDate(b) || matchDate(b);
+    if (ka && kb && ka.getTime() !== kb.getTime()) return kb - ka;
+    return b.id - a.id;
+  });
+  return played.slice(0, n).map(m => {
+    const r = state.results[m.id];
+    const isA = m.teamA === teamName;
+    const gf = Number(isA ? r.scoreA : r.scoreB);
+    const ga = Number(isA ? r.scoreB : r.scoreA);
+    const opp = isA ? m.teamB : m.teamA;
+    const outcome = gf > ga ? "W" : (ga > gf ? "L" : "D");
+    return { opponent: opp, gf, ga, outcome, label: `${gf}-${ga} vs ${opp}` };
+  });
+}
+
+// Render a compact recent-form line for a team (inline items, no wrapper)
+function formLine(teamName, excludeMatchId) {
+  const form = teamRecentForm(teamName, 3, excludeMatchId);
+  if (form.length === 0) return "";
+  const colors = { W:"#2ecc71", L:"#e74c3c", D:"#f9c22e" };
+  return form.map(f =>
+    `<span style="color:${colors[f.outcome]};font-weight:600">${f.gf}-${f.ga}</span> <span style="color:rgba(255,255,255,0.4)">vs ${esc(f.opponent)}</span>`
+  ).join(' <span style="color:rgba(255,255,255,0.2)">·</span> ');
+}
+
 function renderCard(m) {
   const userKey = state.user.toLowerCase();
   const otherKey = userKey === "luis" ? "bibi" : "luis";
@@ -1169,6 +1204,15 @@ function renderCard(m) {
         <div class="vs">VS</div>
         <div class="team"><div class="team-flag">${flag(m.teamB)}</div><div class="team-name">${esc(m.teamB)}</div></div>
       </div>
+      ${(() => {
+        const fa = formLine(m.teamA, m.id), fb = formLine(m.teamB, m.id);
+        if (!fa && !fb) return "";
+        return `<div style="padding:6px 14px 10px;border-bottom:1px solid rgba(255,255,255,0.05)">
+          <div style="font-size:9px;color:rgba(255,255,255,0.3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Recent form (last 3)</div>
+          ${fa ? `<div style="font-size:10px;line-height:1.5;margin-bottom:3px"><span style="font-weight:600;color:rgba(255,255,255,0.7)">${esc(m.teamA)}:</span> ${fa}</div>` : ""}
+          ${fb ? `<div style="font-size:10px;line-height:1.5"><span style="font-weight:600;color:rgba(255,255,255,0.7)">${esc(m.teamB)}:</span> ${fb}</div>` : ""}
+        </div>`;
+      })()}
       ${predHtml}
       ${otherHtml}
       ${resultHtml}
@@ -1553,42 +1597,94 @@ function renderBracket() {
       </div>`;
   }
 
-  // Render R32 matches (resolved ones get full prediction cards; unresolved show as pending)
-  const matchCards = built.matches.map(m => {
-    if (m.teamAResolved && m.teamBResolved) {
-      return renderCard(m);
-    }
-    // Pending card — explain WHY it's not ready
-    let pendingMsg;
-    const aPending = !m.teamAResolved, bPending = !m.teamBResolved;
-    const slotLabel = s => s.type === "3RD" ? "a 3rd-place team" : (s.type === "W" ? "Group " + s.group + " winner" : "Group " + s.group + " runner-up");
-    if ((m.slotA.type === "3RD" && aPending) || (m.slotB.type === "3RD" && bPending)) {
-      pendingMsg = "Awaiting third-place assignment (once all groups finish)";
-    } else {
-      pendingMsg = "Waiting on " + [aPending ? slotLabel(m.slotA) : null, bPending ? slotLabel(m.slotB) : null].filter(Boolean).join(" & ");
-    }
-    return `
-      <div class="card" style="opacity:0.6">
-        <div class="card-header">
-          <span class="match-meta">#${m.matchNo} · ${esc(m.date)} · ${esc(m.time)} ET · ${esc(m.venue)}</span>
-          <span class="group-badge" style="background:#34495e">R32</span>
-        </div>
-        <div style="padding:14px;text-align:center;font-size:14px;color:rgba(255,255,255,0.6)">
-          ${esc(m.teamA)} <span style="color:rgba(255,255,255,0.3)">vs</span> ${esc(m.teamB)}
-          <div style="font-size:11px;color:rgba(243,156,18,0.8);margin-top:6px">${pendingMsg}</div>
-        </div>
-      </div>`;
-  });
+  // Render R32 as VIEW-ONLY bracket tiles (no score entry — that happens in Today/Upcoming).
+  // Each tile shows the matchup, result if entered, your+Bibi predictions if locked, and the path forward.
+  const matchCards = built.matches.map(m => renderBracketTile(m, built));
 
   return `
     ${topHtml}
-    <div class="section-title">Round of 32 ${MULTIPLIERS["Round of 32"]?`· ${MULTIPLIERS["Round of 32"]}× points`:""}</div>
     ${assignHtml}
-    ${matchCards.join("")}
-    <div style="font-size:11px;color:rgba(255,255,255,0.3);text-align:center;margin-top:8px;line-height:1.5">
-      Winners & runners-up fill in as each group finishes. Predict any matchup once both teams are set. Later rounds generate after R32 — coming later.
+    <div class="section-title">Round of 32 — Bracket ${MULTIPLIERS["Round of 32"]?`· ${MULTIPLIERS["Round of 32"]}× points`:""}</div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:12px;line-height:1.5">
+      View-only bracket. Enter scores from the Today or Upcoming tabs. "Advances to" shows the path forward.
     </div>
+    ${matchCards.join("")}
   `;
+}
+
+// R32 match → which R16 match its winner advances to (FIFA 2026 bracket structure).
+// Map: R32 matchNo -> { r16: matchNo, label }
+const R32_TO_R16 = {
+  74:{r16:89}, 77:{r16:89},
+  73:{r16:90}, 75:{r16:90},
+  76:{r16:91}, 78:{r16:91},
+  79:{r16:92}, 80:{r16:92},
+  81:{r16:93}, 82:{r16:93},
+  83:{r16:94}, 84:{r16:94},
+  85:{r16:95}, 86:{r16:95},
+  87:{r16:96}, 88:{r16:96},
+};
+
+// Who else could the winner face? Find the other R32 match feeding the same R16 slot.
+function pathForward(m, built) {
+  const link = R32_TO_R16[m.matchNo];
+  if (!link) return null;
+  // find sibling R32 matches feeding the same R16 match
+  const siblings = Object.keys(R32_TO_R16)
+    .filter(k => R32_TO_R16[k].r16 === link.r16 && Number(k) !== m.matchNo)
+    .map(k => built.matches.find(x => x.matchNo === Number(k)))
+    .filter(Boolean);
+  return { r16: link.r16, siblings };
+}
+
+// Compact, view-only bracket tile
+function renderBracketTile(m, built) {
+  const result = state.results[m.id];
+  const hasResult = result && result.entered;
+  const resolved = m.teamAResolved && m.teamBResolved;
+
+  // Determine winner styling if result entered
+  let aWin = false, bWin = false;
+  if (hasResult && result.draw !== "Y") {
+    aWin = result.winner === "A";
+    bWin = result.winner === "B";
+  }
+
+  const teamRow = (name, score, isWin, resolvedSide) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;${isWin?'':''}">
+      <span style="display:flex;align-items:center;gap:8px;font-size:14px;font-weight:${isWin?'800':'500'};color:${isWin?'#2ecc71':(resolvedSide?'#fff':'rgba(255,255,255,0.45)')}">
+        ${resolvedSide ? flag(name) : '<span style="font-size:24px">⚽</span>'}
+        ${esc(name)}
+        ${isWin?' <span style="font-size:10px">✓</span>':''}
+      </span>
+      ${hasResult ? `<span style="font-size:16px;font-weight:800;color:${isWin?'#2ecc71':'#fff'}">${esc(score)}</span>` : ""}
+    </div>`;
+
+  // Path forward
+  const path = pathForward(m, built);
+  let pathHtml = "";
+  if (path && path.siblings.length > 0) {
+    const sib = path.siblings[0];
+    const opp = (sib.teamAResolved && sib.teamBResolved)
+      ? `${esc(sib.teamA)} / ${esc(sib.teamB)}`
+      : "winner of #" + sib.matchNo;
+    pathHtml = `<div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.05)">↗ Winner advances to R16 #${path.r16} — faces ${opp}</div>`;
+  }
+
+  return `
+    <div class="card" style="${hasResult?'':'opacity:'+(resolved?'1':'0.65')}">
+      <div class="card-header">
+        <span class="match-meta">#${m.matchNo} · ${esc(m.date)} · ${esc(m.time)} ET · ${esc(m.venue)}</span>
+        <span class="group-badge" style="background:#34495e">R32</span>
+      </div>
+      <div style="padding:10px 14px">
+        ${teamRow(m.teamA, hasResult?result.scoreA:"", aWin, m.teamAResolved)}
+        <div style="height:1px;background:rgba(255,255,255,0.06)"></div>
+        ${teamRow(m.teamB, hasResult?result.scoreB:"", bWin, m.teamBResolved)}
+        ${!resolved ? `<div style="font-size:10px;color:rgba(243,156,18,0.8);margin-top:6px">${m.teamAResolved||m.teamBResolved?'Awaiting other team':'Teams TBD'}</div>` : ""}
+        ${pathHtml}
+      </div>
+    </div>`;
 }
 
 // Render the live third-place race: all 12 groups' 3rd-placed teams, ranked, top 8 qualify
