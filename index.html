@@ -498,23 +498,26 @@ function rankedThirdPlace(standings) {
 // Each slot defines how its two teams are determined. "W"=winner,"R"=runner-up of a group.
 // "3RD" slots need a third-place team assigned (user confirms these per FIFA matrix).
 // Source: official 2026 R32 schedule. Dates/venues/times included.
-const R32_TEMPLATE = [
-  { id:101, match:73, date:"Jun 28", time:"3:00 PM",  venue:"Los Angeles",   a:{type:"R",group:"A"}, b:{type:"R",group:"B"} },
-  { id:102, match:74, date:"Jun 29", time:"4:30 PM",  venue:"Boston",        a:{type:"W",group:"E"}, b:{type:"3RD"} },
-  { id:103, match:75, date:"Jun 29", time:"9:00 PM",  venue:"Monterrey",     a:{type:"W",group:"F"}, b:{type:"R",group:"C"} },
-  { id:104, match:76, date:"Jun 29", time:"1:00 PM",  venue:"Houston",       a:{type:"W",group:"C"}, b:{type:"R",group:"F"} },
-  { id:105, match:77, date:"Jun 30", time:"5:00 PM",  venue:"New York/NJ",   a:{type:"W",group:"I"}, b:{type:"3RD"} },
-  { id:106, match:78, date:"Jun 30", time:"1:00 PM",  venue:"Dallas",        a:{type:"R",group:"E"}, b:{type:"R",group:"I"} },
-  { id:107, match:79, date:"Jun 30", time:"9:00 PM",  venue:"Mexico City",   a:{type:"W",group:"A"}, b:{type:"3RD"} },
-  { id:108, match:80, date:"Jul 1",  time:"12:00 PM", venue:"Atlanta",       a:{type:"W",group:"L"}, b:{type:"3RD"} },
-  { id:109, match:81, date:"Jul 1",  time:"8:00 PM",  venue:"San Francisco", a:{type:"W",group:"D"}, b:{type:"3RD"} },
-  { id:110, match:82, date:"Jul 1",  time:"4:00 PM",  venue:"Seattle",       a:{type:"W",group:"G"}, b:{type:"3RD"} },
-  { id:111, match:83, date:"Jul 2",  time:"7:00 PM",  venue:"Toronto",       a:{type:"R",group:"K"}, b:{type:"R",group:"L"} },
-  { id:112, match:84, date:"Jul 2",  time:"3:00 PM",  venue:"Los Angeles",   a:{type:"W",group:"H"}, b:{type:"R",group:"J"} },
-  { id:113, match:85, date:"Jul 2",  time:"11:00 PM", venue:"Vancouver",     a:{type:"W",group:"B"}, b:{type:"3RD"} },
-  { id:114, match:86, date:"Jul 3",  time:"6:00 PM",  venue:"Miami",         a:{type:"W",group:"J"}, b:{type:"R",group:"H"} },
-  { id:115, match:87, date:"Jul 3",  time:"9:30 PM",  venue:"Kansas City",   a:{type:"W",group:"K"}, b:{type:"3RD"} },
-  { id:116, match:88, date:"Jul 3",  time:"2:00 PM",  venue:"Dallas",        a:{type:"R",group:"D"}, b:{type:"R",group:"G"} },
+// Official, finalized Round of 32 bracket (locked after group stage completed).
+// Hardcoded from the official FIFA/FOX bracket — teams are fixed, not derived from slot rules.
+// Dates/times ET. matchNo follows official numbering 73-88.
+const R32_OFFICIAL = [
+  { id:101, matchNo:73, date:"Jun 28", time:"3:00 PM",  venue:"Los Angeles",   teamA:"South Africa", teamB:"Canada" },
+  { id:102, matchNo:76, date:"Jun 29", time:"1:00 PM",  venue:"Houston",       teamA:"Brazil",       teamB:"Japan" },
+  { id:103, matchNo:74, date:"Jun 29", time:"4:30 PM",  venue:"Boston",        teamA:"Germany",      teamB:"Paraguay" },
+  { id:104, matchNo:75, date:"Jun 29", time:"9:00 PM",  venue:"Monterrey",     teamA:"Netherlands",  teamB:"Morocco" },
+  { id:105, matchNo:78, date:"Jun 30", time:"6:00 PM",  venue:"Dallas",        teamA:"Ivory Coast",  teamB:"Norway" },
+  { id:106, matchNo:77, date:"Jun 30", time:"10:00 PM", venue:"New York/NJ",   teamA:"France",       teamB:"Sweden" },
+  { id:107, matchNo:79, date:"Jun 30", time:"9:00 PM",  venue:"Mexico City",   teamA:"Mexico",       teamB:"Ecuador" },
+  { id:108, matchNo:80, date:"Jul 1",  time:"12:00 PM", venue:"Atlanta",       teamA:"England",      teamB:"DR Congo" },
+  { id:109, matchNo:82, date:"Jul 1",  time:"4:00 PM",  venue:"Seattle",       teamA:"Belgium",      teamB:"Senegal" },
+  { id:110, matchNo:81, date:"Jul 1",  time:"8:00 PM",  venue:"San Francisco", teamA:"USA",          teamB:"Bosnia & Herz." },
+  { id:111, matchNo:84, date:"Jul 2",  time:"3:00 PM",  venue:"Los Angeles",   teamA:"Spain",        teamB:"Austria" },
+  { id:112, matchNo:83, date:"Jul 2",  time:"7:00 PM",  venue:"Toronto",       teamA:"Portugal",     teamB:"Croatia" },
+  { id:113, matchNo:85, date:"Jul 2",  time:"11:00 PM", venue:"Vancouver",     teamA:"Switzerland",  teamB:"Iran" },
+  { id:114, matchNo:86, date:"Jul 3",  time:"3:00 PM",  venue:"Miami",         teamA:"Egypt",        teamB:"Australia" },
+  { id:115, matchNo:87, date:"Jul 3",  time:"6:00 PM",  venue:"Kansas City",   teamA:"Argentina",    teamB:"Cape Verde" },
+  { id:116, matchNo:88, date:"Jul 3",  time:"9:30 PM",  venue:"Dallas",        teamA:"Colombia",     teamB:"Ghana" },
 ];
 
 // Is a specific group's matches all entered?
@@ -522,46 +525,21 @@ function groupComplete(g) {
   return GROUP_MATCHES.filter(m => m.group === g).every(m => (state.results[m.id]||{}).entered);
 }
 
-// Resolve a slot side to a team name from standings.
-// W/R only resolve once the GROUP is complete (a current leader isn't the confirmed winner).
-// Returns null if not yet determined.
-function resolveSlot(side, standings) {
-  if (!side) return null;
-  if (side.type === "W") return groupComplete(side.group) ? (standings[side.group]?.[0]?.team || null) : null;
-  if (side.type === "R") return groupComplete(side.group) ? (standings[side.group]?.[1]?.team || null) : null;
-  if (side.type === "3RD") return side.assigned || null; // user-assigned third place
-  return null;
-}
-
-// Build the Round of 32 matches from current standings.
-// Returns { matches: [...], thirdSlotsNeeded: int, thirdAssigned: int }
+// Build the Round of 32 from the official fixed bracket. All 16 matchups are known.
 function buildR32() {
-  const standings = computeGroupStandings();
-  const matches = [];
-  const existing = (state.knockout && state.knockout.r32Assignments) || {};
-  let thirdSlots = 0, thirdAssigned = 0;
-
-  R32_TEMPLATE.forEach(slot => {
-    const aSide = { ...slot.a };
-    const bSide = { ...slot.b };
-    // restore any saved third-place assignments
-    if (aSide.type === "3RD") { thirdSlots++; aSide.assigned = existing[slot.id + "_a"] || null; if (aSide.assigned) thirdAssigned++; }
-    if (bSide.type === "3RD") { thirdSlots++; bSide.assigned = existing[slot.id + "_b"] || null; if (bSide.assigned) thirdAssigned++; }
-    const teamA = resolveSlot(aSide, standings);
-    const teamB = resolveSlot(bSide, standings);
-    matches.push({
-      id: slot.id, stage: "Round of 32", round: "R32",
-      matchNo: slot.match, date: slot.date, time: slot.time, venue: slot.venue,
-      teamA: teamA || labelFor(aSide), teamB: teamB || labelFor(bSide),
-      teamAResolved: !!teamA, teamBResolved: !!teamB,
-      slotA: aSide, slotB: bSide,
-    });
-  });
-  return { matches, thirdSlots, thirdAssigned };
+  const matches = R32_OFFICIAL.map(m => ({
+    id: m.id, stage: "Round of 32", round: "R32",
+    matchNo: m.matchNo, date: m.date, time: m.time, venue: m.venue,
+    teamA: m.teamA, teamB: m.teamB,
+    teamAResolved: true, teamBResolved: true,
+  }));
+  // No manual third-place assignment needed anymore — bracket is fixed.
+  return { matches, thirdSlots: 0, thirdAssigned: 0 };
 }
 
-// Human label for an unresolved slot side
+// Human label for an unresolved slot side (kept for backward-compat; unused now)
 function labelFor(side) {
+  if (!side) return "TBD";
   if (side.type === "W") return "Winner " + side.group;
   if (side.type === "R") return "Runner-up " + side.group;
   if (side.type === "3RD") return "3rd Place (TBD)";
@@ -1559,51 +1537,12 @@ function renderBracket() {
     `;
   }
 
-  // Third-place assignment UI — only meaningful once ALL groups are done (so the 8 qualifiers are known)
-  const thirds = rankedThirdPlace(standings);
-  const top8Thirds = thirds.slice(0, 8);
-  const thirdNames = top8Thirds.map(t => t.team);
-  const needsAssign = built.thirdSlots - built.thirdAssigned;
-
-  let assignHtml = "";
-  if (complete && needsAssign > 0) {
-    // Build dropdowns for each 3RD slot
-    const slotInputs = [];
-    R32_TEMPLATE.forEach(slot => {
-      ["a","b"].forEach(side => {
-        if (slot[side].type === "3RD") {
-          const key = slot.id + "_" + side;
-          const assigned = state.knockout.r32Assignments[key] || "";
-          const otherSideTeam = side === "a" ? built.matches.find(m=>m.id===slot.id)?.teamB : built.matches.find(m=>m.id===slot.id)?.teamA;
-          slotInputs.push(`
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
-              <div style="font-size:12px;color:rgba(255,255,255,0.65)">Match ${slot.match}: vs ${esc(otherSideTeam||"?")}</div>
-              <select onchange="assignThirdPlace('${key}',this.value)" style="height:34px;border-radius:6px;border:1px solid rgba(243,156,18,0.4);background:#12213a;color:#f9c22e;font-size:12px;font-family:inherit;padding:0 6px;max-width:150px">
-                <option value="">— pick 3rd —</option>
-                ${thirdNames.map(n => `<option value="${esc(n)}" ${assigned===n?'selected':''}>${esc(n)}</option>`).join("")}
-              </select>
-            </div>`);
-        }
-      });
-    });
-    assignHtml = `
-      <div class="standings-card" style="border-color:rgba(243,156,18,0.3)">
-        <div style="font-size:13px;font-weight:700;color:#f9c22e;margin-bottom:4px">⚠️ Confirm third-place teams (${built.thirdAssigned}/${built.thirdSlots})</div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:10px;line-height:1.5">
-          The 8 best third-place teams qualify. Assign each to its bracket slot per FIFA's official placement. The 8 qualifiers (by rank) are:
-          <div style="margin-top:6px;color:#2ecc71;font-weight:600">${thirdNames.map(esc).join(", ")}</div>
-        </div>
-        ${slotInputs.join("")}
-      </div>`;
-  }
-
   // Render R32 as VIEW-ONLY bracket tiles (no score entry — that happens in Today/Upcoming).
-  // Each tile shows the matchup, result if entered, your+Bibi predictions if locked, and the path forward.
+  // Bracket is now the official fixed bracket, so all 16 matchups are set.
   const matchCards = built.matches.map(m => renderBracketTile(m, built));
 
   return `
     ${topHtml}
-    ${assignHtml}
     <div class="section-title">Round of 32 — Bracket ${MULTIPLIERS["Round of 32"]?`· ${MULTIPLIERS["Round of 32"]}× points`:""}</div>
     <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:12px;line-height:1.5">
       View-only bracket. Enter scores from the Today or Upcoming tabs. "Advances to" shows the path forward.
@@ -1614,15 +1553,19 @@ function renderBracket() {
 
 // R32 match → which R16 match its winner advances to (FIFA 2026 bracket structure).
 // Map: R32 matchNo -> { r16: matchNo, label }
+// R32 → R16 pairing (which two R32 winners meet in the Round of 16).
+// Pairs are by official bracket. Each pair shares an r16 match number (89-96).
+// Verified from CBS: USA/Bosnia (81) winner meets Belgium/Senegal (82) winner.
+// Pairs follow the bracket order; matchNos grouped two-by-two into R16.
 const R32_TO_R16 = {
-  74:{r16:89}, 77:{r16:89},
-  73:{r16:90}, 75:{r16:90},
-  76:{r16:91}, 78:{r16:91},
-  79:{r16:92}, 80:{r16:92},
-  81:{r16:93}, 82:{r16:93},
-  83:{r16:94}, 84:{r16:94},
-  85:{r16:95}, 86:{r16:95},
-  87:{r16:96}, 88:{r16:96},
+  74:{r16:89}, 77:{r16:89},   // Germany/Paraguay  ↔ France/Sweden
+  73:{r16:90}, 75:{r16:90},   // SA/Canada         ↔ Netherlands/Morocco
+  76:{r16:91}, 78:{r16:91},   // Brazil/Japan      ↔ Ivory Coast/Norway
+  79:{r16:92}, 80:{r16:92},   // Mexico/Ecuador    ↔ England/DR Congo
+  81:{r16:93}, 82:{r16:93},   // USA/Bosnia        ↔ Belgium/Senegal (CONFIRMED)
+  83:{r16:94}, 84:{r16:94},   // Portugal/Croatia  ↔ Spain/Austria
+  85:{r16:95}, 86:{r16:95},   // Switzerland/Iran  ↔ Egypt/Australia
+  87:{r16:96}, 88:{r16:96},   // Argentina/CapeVerde ↔ Colombia/Ghana
 };
 
 // Who else could the winner face? Find the other R32 match feeding the same R16 slot.
