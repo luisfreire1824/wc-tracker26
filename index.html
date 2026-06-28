@@ -203,7 +203,7 @@ const GROUP_MATCHES = [
   { id:72, date:"Jun 27", time:"10:00 PM", group:"J", teamA:"Jordan",         teamB:"Argentina",      venue:"Dallas" },
 ];
 
-const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5, redCard: 5 };
+const DEFAULT_SCORING = { scoreA: 15, scoreB: 15, winner: 10, draw: 5, penalty: 5, redCard: 5, overtime: 5 };
 const DEFAULT_PAYOUT = { ptsPerUnit: 100, dollarsPerUnit: 20 };
 const DEFAULT_LATE = { latePercent: 50 }; // late bets score this % of normal
 let LATE = { ...DEFAULT_LATE };
@@ -328,7 +328,7 @@ function startFirestoreSync() {
     if (doc.exists) {
       try {
         const data = JSON.parse(doc.data().json || "{}");
-        SCORING = { ...DEFAULT_SCORING, scoreA: data.scoreA ?? 15, scoreB: data.scoreB ?? 15, winner: data.winner ?? 10, draw: data.draw ?? 5, penalty: data.penalty ?? 5, redCard: data.redCard ?? 5 };
+        SCORING = { ...DEFAULT_SCORING, scoreA: data.scoreA ?? 15, scoreB: data.scoreB ?? 15, winner: data.winner ?? 10, draw: data.draw ?? 5, penalty: data.penalty ?? 5, redCard: data.redCard ?? 5, overtime: data.overtime ?? 5 };
         PAYOUT = { ptsPerUnit: data.ptsPerUnit ?? 100, dollarsPerUnit: data.dollarsPerUnit ?? 20 };
         if (data.multipliers) MULTIPLIERS = { ...DEFAULT_MULTIPLIERS, ...data.multipliers };
         if (data.late) LATE = { ...DEFAULT_LATE, ...data.late };
@@ -405,15 +405,34 @@ function countFlagged() {
 // ── Scoring ───────────────────────────────────────────────────────────────────
 function calcPoints(pred, result, stage) {
   if (!pred || !pred.locked || !result || !result.entered) return null;
+  const isKO = (stage || "Group") !== "Group";
   let pts = 0;
   if (String(pred.scoreA) === String(result.scoreA)) pts += SCORING.scoreA;
   if (String(pred.scoreB) === String(result.scoreB)) pts += SCORING.scoreB;
-  if (result.draw === "Y") {
-    if (pred.draw === "Y") pts += SCORING.draw;
+
+  if (isKO) {
+    // Knockouts: winner is from predicted scoreline (a level prediction earns no winner pts).
+    // No "draw" bucket — replaced by "overtime".
+    const pa = Number(pred.scoreA), pb = Number(pred.scoreB);
+    if (pa !== pb) {
+      const predWinner = pa > pb ? "A" : "B";
+      if (predWinner === result.winner) pts += SCORING.winner;
+    }
+    // Overtime Y/N: did the match go past 90 minutes
+    if (pred.overtime !== undefined && pred.overtime !== "" && result.overtime !== undefined && result.overtime !== "") {
+      if (pred.overtime === result.overtime) pts += (SCORING.overtime || 0);
+    }
   } else {
-    const predWinner = Number(pred.scoreA) > Number(pred.scoreB) ? "A" : "B";
-    if (predWinner === result.winner) pts += SCORING.winner;
+    // Group stage: original draw logic
+    if (result.draw === "Y") {
+      if (pred.draw === "Y") pts += SCORING.draw;
+    } else {
+      const predWinner = Number(pred.scoreA) > Number(pred.scoreB) ? "A" : "B";
+      if (predWinner === result.winner) pts += SCORING.winner;
+    }
   }
+
+  // Penalty: in knockouts this means "penalty kick in play OR a shootout"; in groups, penalty in play.
   if (pred.penalty === result.penalty) pts += SCORING.penalty;
   // Red card: only scored when both the prediction and result include it (added mid-tournament)
   if (pred.redCard !== undefined && pred.redCard !== "" && result.redCard !== undefined && result.redCard !== "") {
@@ -692,7 +711,7 @@ window.resetSettings = async function() {
 };
 
 window.updateDraft = function(id, field, value) {
-  drafts[id] = drafts[id] || { scoreA:"", scoreB:"", draw:"", penalty:"", redCard:"" };
+  drafts[id] = drafts[id] || { scoreA:"", scoreB:"", draw:"", penalty:"", redCard:"", overtime:"" };
   drafts[id][field] = value;
   render();
 };
@@ -727,17 +746,39 @@ window.lockPrediction = async function(id) {
 };
 window.toggleResultForm = function(id) { resultOpen[id] = !resultOpen[id]; render(); };
 window.updateResultDraft = function(id, field, value) {
-  resultDrafts[id] = resultDrafts[id] || { scoreA:"", scoreB:"", penalty:"" };
+  resultDrafts[id] = resultDrafts[id] || { scoreA:"", scoreB:"", penalty:"", overtime:"" };
   resultDrafts[id][field] = value;
   render();
 };
 window.submitResult = async function(id) {
   const d = resultDrafts[id];
   if (!d || d.scoreA === "" || d.scoreB === "") return;
+
+  const m = allMatches().find(x => x.id === id);
+  const isKO = m && matchStage(m) !== "Group";
+
+  const levelScore = String(d.scoreA) === String(d.scoreB);
+  let winner = levelScore ? "" : (Number(d.scoreA) > Number(d.scoreB) ? "A" : "B");
+  let draw = levelScore ? "Y" : "N";
+
+  // Knockouts always have a winner. If the score is level, ask who advanced (shootout/ET).
+  if (isKO && levelScore) {
+    const ans = prompt(`This knockout match is level at ${d.scoreA}-${d.scoreB}. Who ADVANCED?\n\nType A for ${m.teamA}, or B for ${m.teamB}:`, "");
+    if (ans === null) return; // cancelled
+    const a = ans.trim().toUpperCase();
+    if (a !== "A" && a !== "B") { alert("Please enter A or B."); return; }
+    winner = a;
+    draw = "N"; // not a draw in a knockout — someone advanced
+  }
+
   if (!confirm("Confirm final result? This scores the match.")) return;
-  const draw = String(d.scoreA) === String(d.scoreB) ? "Y" : "N";
-  const winner = draw === "Y" ? "" : (Number(d.scoreA) > Number(d.scoreB) ? "A" : "B");
-  state.results[id] = { scoreA: d.scoreA, scoreB: d.scoreB, penalty: d.penalty || "N", redCard: d.redCard || "", draw, winner, entered: true, enteredBy: state.user };
+
+  state.results[id] = {
+    scoreA: d.scoreA, scoreB: d.scoreB,
+    penalty: d.penalty || "N", redCard: d.redCard || "",
+    overtime: isKO ? (d.overtime || "N") : "",
+    draw, winner, entered: true, enteredBy: state.user
+  };
   saveLocalCache();
   delete resultDrafts[id]; delete resultOpen[id];
   render();
@@ -1027,8 +1068,9 @@ function renderCard(m) {
   const result = state.results[m.id] || {};
   const isLocked = !!myPred.locked;
   const hasResult = !!result.entered;
-  const d = drafts[m.id] || { scoreA:"", scoreB:"", draw:"", penalty:"", redCard:"" };
-  const rd = resultDrafts[m.id] || { scoreA:"", scoreB:"", penalty:"", redCard:"" };
+  const d = drafts[m.id] || { scoreA:"", scoreB:"", draw:"", penalty:"", redCard:"", overtime:"" };
+  const rd = resultDrafts[m.id] || { scoreA:"", scoreB:"", penalty:"", redCard:"", overtime:"" };
+  const isKO = matchStage(m) !== "Group";
 
   const luisPts = calcPoints(pred.luis, result, matchStage(m));
   const bibiPts = calcPoints(pred.bibi, result, matchStage(m));
@@ -1049,12 +1091,16 @@ function renderCard(m) {
             oninput="updateDraft(${m.id},'scoreB',this.value)">
         </div>
         <div class="toggle-row">
-          <button class="toggle-btn ${d.draw==='Y'?'active-blue':''}" onclick="updateDraft(${m.id},'draw','Y')">✓ Draw</button>
-          <button class="toggle-btn ${d.draw==='N'?'active-blue':''}" onclick="updateDraft(${m.id},'draw','N')">✗ Draw</button>
+          ${isKO
+            ? `<button class="toggle-btn ${d.overtime==='Y'?'active-blue':''}" onclick="updateDraft(${m.id},'overtime','Y')">✓ Overtime</button>
+               <button class="toggle-btn ${d.overtime==='N'?'active-blue':''}" onclick="updateDraft(${m.id},'overtime','N')">✗ No OT</button>`
+            : `<button class="toggle-btn ${d.draw==='Y'?'active-blue':''}" onclick="updateDraft(${m.id},'draw','Y')">✓ Draw</button>
+               <button class="toggle-btn ${d.draw==='N'?'active-blue':''}" onclick="updateDraft(${m.id},'draw','N')">✗ Draw</button>`
+          }
         </div>
         <div class="toggle-row">
-          <button class="toggle-btn ${d.penalty==='Y'?'active-purple':''}" onclick="updateDraft(${m.id},'penalty','Y')">✓ Penalty</button>
-          <button class="toggle-btn ${d.penalty==='N'?'active-purple':''}" onclick="updateDraft(${m.id},'penalty','N')">✗ Penalty</button>
+          <button class="toggle-btn ${d.penalty==='Y'?'active-purple':''}" onclick="updateDraft(${m.id},'penalty','Y')">✓ ${isKO?'Penalty/Shootout':'Penalty'}</button>
+          <button class="toggle-btn ${d.penalty==='N'?'active-purple':''}" onclick="updateDraft(${m.id},'penalty','N')">✗ ${isKO?'Neither':'Penalty'}</button>
         </div>
         <div class="toggle-row">
           <button class="toggle-btn ${d.redCard==='Y'?'active-red':''}" onclick="updateDraft(${m.id},'redCard','Y')">🟥 Red Card</button>
@@ -1070,7 +1116,7 @@ function renderCard(m) {
         <span class="pred-score">${esc(myPred.scoreA)}</span>
         <span style="color:rgba(255,255,255,0.3)">–</span>
         <span class="pred-score">${esc(myPred.scoreB)}</span>
-        <span class="pred-extras">${myPred.draw==='Y'?'· Draw ✓':'· No Draw'} &nbsp; ${myPred.penalty==='Y'?'· Pen ✓':'· No Pen'}${myPred.redCard!==undefined&&myPred.redCard!==''?(myPred.redCard==='Y'?' &nbsp;· 🟥 Red':' &nbsp;· No Red'):''}</span>
+        <span class="pred-extras">${isKO ? (myPred.overtime==='Y'?'· OT ✓':'· No OT') : (myPred.draw==='Y'?'· Draw ✓':'· No Draw')} &nbsp; ${myPred.penalty==='Y'?(isKO?'· Pen/SO ✓':'· Pen ✓'):(isKO?'· No Pen/SO':'· No Pen')}${myPred.redCard!==undefined&&myPred.redCard!==''?(myPred.redCard==='Y'?' &nbsp;· 🟥 Red':' &nbsp;· No Red'):''}</span>
       </div>
       ${hasResult && myPts !== null ? `<div style="text-align:center;padding-bottom:10px"><span class="pts-badge ${ptsClass(myPts)}">${myPts} pts</span></div>` : ""}
     `;
@@ -1123,9 +1169,18 @@ function renderCard(m) {
               <input class="result-input" type="number" inputmode="numeric" min="0" max="20" placeholder="0" value="${esc(rd.scoreB)}"
                 oninput="updateResultDraft(${m.id},'scoreB',this.value)">
             </div>
+            ${isKO && rd.scoreA !== "" && rd.scoreB !== "" && String(rd.scoreA) === String(rd.scoreB) ? `
+              <div style="background:rgba(243,156,18,0.12);border:1px solid rgba(243,156,18,0.4);border-radius:8px;padding:9px 11px;margin-bottom:10px;font-size:12px;color:#f9c22e;line-height:1.5">
+                ⚠️ <strong>Level score — no draws in knockouts.</strong> When you confirm, you'll be asked who advanced (${esc(m.teamA)} or ${esc(m.teamB)}) so the winner gets scored.
+              </div>` : ""}
+            ${isKO ? `
             <div class="toggle-row">
-              <button class="toggle-btn ${rd.penalty==='Y'?'active-green':''}" onclick="updateResultDraft(${m.id},'penalty','Y')">✓ Penalty in match</button>
-              <button class="toggle-btn ${rd.penalty==='N'?'active-green':''}" onclick="updateResultDraft(${m.id},'penalty','N')">✗ No penalty</button>
+              <button class="toggle-btn ${rd.overtime==='Y'?'active-blue':''}" onclick="updateResultDraft(${m.id},'overtime','Y')">✓ Went to overtime</button>
+              <button class="toggle-btn ${rd.overtime==='N'?'active-blue':''}" onclick="updateResultDraft(${m.id},'overtime','N')">✗ No overtime</button>
+            </div>` : ""}
+            <div class="toggle-row">
+              <button class="toggle-btn ${rd.penalty==='Y'?'active-green':''}" onclick="updateResultDraft(${m.id},'penalty','Y')">✓ ${isKO?'Penalty kick / shootout':'Penalty in match'}</button>
+              <button class="toggle-btn ${rd.penalty==='N'?'active-green':''}" onclick="updateResultDraft(${m.id},'penalty','N')">✗ ${isKO?'Neither':'No penalty'}</button>
             </div>
             <div class="toggle-row">
               <button class="toggle-btn ${rd.redCard==='Y'?'active-red':''}" onclick="updateResultDraft(${m.id},'redCard','Y')">🟥 Red card shown</button>
@@ -2169,8 +2224,9 @@ function renderSettings() {
       ${row("Exact Score — Team A", "scoring", "scoreA", SCORING.scoreA, "Points for predicting Team A's exact goals")}
       ${row("Exact Score — Team B", "scoring", "scoreB", SCORING.scoreB, "Points for predicting Team B's exact goals")}
       ${row("Correct Winner", "scoring", "winner", SCORING.winner, "Points for predicting the winning team")}
-      ${row("Correct Draw", "scoring", "draw", SCORING.draw, "Points for correctly predicting a draw")}
-      ${row("In-Game Penalty", "scoring", "penalty", SCORING.penalty, "Points for predicting whether a penalty was awarded")}
+      ${row("Correct Draw (group)", "scoring", "draw", SCORING.draw, "Group stage: points for correctly predicting a draw")}
+      ${row("Overtime (knockouts)", "scoring", "overtime", SCORING.overtime ?? 5, "Knockouts: points for predicting if it goes past 90 min")}
+      ${row("Penalty / Shootout", "scoring", "penalty", SCORING.penalty, "Penalty kick in play, or (knockouts) a shootout")}
       ${row("Red Card", "scoring", "redCard", SCORING.redCard ?? 5, "Points for predicting whether a red card was shown")}
       <div style="display:flex;justify-content:space-between;padding:12px 0 2px;font-size:13px">
         <span style="color:rgba(255,255,255,0.5);font-weight:600">Max points per game</span>
