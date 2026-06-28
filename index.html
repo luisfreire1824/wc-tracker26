@@ -411,13 +411,12 @@ function calcPoints(pred, result, stage) {
   if (String(pred.scoreB) === String(result.scoreB)) pts += SCORING.scoreB;
 
   if (isKO) {
-    // Knockouts: winner is from predicted scoreline (a level prediction earns no winner pts).
-    // No "draw" bucket — replaced by "overtime".
+    // Knockouts: winner = whoever the player predicted to ADVANCE.
+    // Decisive scoreline implies the advancing team; a level prediction uses the explicit "advances" pick.
     const pa = Number(pred.scoreA), pb = Number(pred.scoreB);
-    if (pa !== pb) {
-      const predWinner = pa > pb ? "A" : "B";
-      if (predWinner === result.winner) pts += SCORING.winner;
-    }
+    let predAdvance = pred.advance; // "A" | "B" | undefined
+    if (!predAdvance && pa !== pb) predAdvance = pa > pb ? "A" : "B";
+    if (predAdvance && predAdvance === result.winner) pts += SCORING.winner;
     // Overtime Y/N: did the match go past 90 minutes
     if (pred.overtime !== undefined && pred.overtime !== "" && result.overtime !== undefined && result.overtime !== "") {
       if (pred.overtime === result.overtime) pts += (SCORING.overtime || 0);
@@ -725,8 +724,21 @@ window.lockPrediction = async function(id) {
     return;
   }
 
-  // Find the match to check kickoff time
+  // Find the match to check kickoff time + knockout rules
   const m = allMatches().find(x => x.id === id);
+  const isKO = m && matchStage(m) !== "Group";
+  const levelScore = String(d.scoreA) === String(d.scoreB);
+
+  // Knockout + level score requires picking who advances
+  if (isKO && levelScore && d.advance !== "A" && d.advance !== "B") {
+    alert("This is a level score in a knockout — pick which team advances before locking.");
+    return;
+  }
+  // Decisive score: set advance from scoreline so it's always stored
+  if (isKO && !levelScore) {
+    d.advance = Number(d.scoreA) > Number(d.scoreB) ? "A" : "B";
+  }
+
   const late = m ? isLateNow(m) : false;
 
   if (late) {
@@ -745,6 +757,18 @@ window.lockPrediction = async function(id) {
   await pushDoc("predictions", state.predictions);
 };
 window.toggleResultForm = function(id) { resultOpen[id] = !resultOpen[id]; render(); };
+window.reopenPrediction = async function(id) {
+  if ((state.results[id]||{}).entered) { alert("Result already entered — can't edit."); return; }
+  const userKey = state.user.toLowerCase();
+  const mine = (state.predictions[id]||{})[userKey];
+  if (!mine) return;
+  if (!confirm("Re-open this prediction to edit it? It will be unlocked until you lock again.")) return;
+  drafts[id] = { scoreA: mine.scoreA, scoreB: mine.scoreB, draw: mine.draw||"", penalty: mine.penalty||"", redCard: mine.redCard||"", overtime: mine.overtime||"", advance: mine.advance||"" };
+  delete state.predictions[id][userKey];
+  saveLocalCache();
+  render();
+  await pushDoc("predictions", state.predictions);
+};
 window.updateResultDraft = function(id, field, value) {
   resultDrafts[id] = resultDrafts[id] || { scoreA:"", scoreB:"", penalty:"", overtime:"" };
   resultDrafts[id][field] = value;
@@ -1090,6 +1114,14 @@ function renderCard(m) {
           <input class="score-input" type="number" inputmode="numeric" min="0" max="20" placeholder="0" value="${esc(d.scoreB)}"
             oninput="updateDraft(${m.id},'scoreB',this.value)">
         </div>
+        ${isKO && d.scoreA !== "" && d.scoreB !== "" && String(d.scoreA) === String(d.scoreB) ? `
+          <div style="background:rgba(243,156,18,0.1);border:1px solid rgba(243,156,18,0.35);border-radius:8px;padding:9px 11px;margin-bottom:10px">
+            <div style="font-size:11px;color:#f9c22e;font-weight:700;margin-bottom:7px">⚽ Level score — who advances? (shootout/extra time)</div>
+            <div class="toggle-row" style="margin-bottom:0">
+              <button class="toggle-btn ${d.advance==='A'?'active-green':''}" onclick="updateDraft(${m.id},'advance','A')">${esc(m.teamA)}</button>
+              <button class="toggle-btn ${d.advance==='B'?'active-green':''}" onclick="updateDraft(${m.id},'advance','B')">${esc(m.teamB)}</button>
+            </div>
+          </div>` : ""}
         <div class="toggle-row">
           ${isKO
             ? `<button class="toggle-btn ${d.overtime==='Y'?'active-blue':''}" onclick="updateDraft(${m.id},'overtime','Y')">✓ Overtime</button>
@@ -1110,15 +1142,18 @@ function renderCard(m) {
       </div>
     `;
   } else {
+    const canReopen = !hasResult; // can't edit once result is in
+    const advanceLabel = (isKO && myPred.advance) ? ` &nbsp;· ➡️ ${esc(myPred.advance === "A" ? m.teamA : m.teamB)} adv` : "";
     predHtml = `
       <div class="locked-badge">🔒 Locked${myPred.late ? ` <span style="color:#e67e22">· ⏰ Late (−${100-(LATE.latePercent??50)}%)</span>` : ""}</div>
       <div class="pred-summary">
         <span class="pred-score">${esc(myPred.scoreA)}</span>
         <span style="color:rgba(255,255,255,0.3)">–</span>
         <span class="pred-score">${esc(myPred.scoreB)}</span>
-        <span class="pred-extras">${isKO ? (myPred.overtime==='Y'?'· OT ✓':'· No OT') : (myPred.draw==='Y'?'· Draw ✓':'· No Draw')} &nbsp; ${myPred.penalty==='Y'?(isKO?'· Pen/SO ✓':'· Pen ✓'):(isKO?'· No Pen/SO':'· No Pen')}${myPred.redCard!==undefined&&myPred.redCard!==''?(myPred.redCard==='Y'?' &nbsp;· 🟥 Red':' &nbsp;· No Red'):''}</span>
+        <span class="pred-extras">${isKO ? (myPred.overtime==='Y'?'· OT ✓':'· No OT') : (myPred.draw==='Y'?'· Draw ✓':'· No Draw')} &nbsp; ${myPred.penalty==='Y'?(isKO?'· Pen/SO ✓':'· Pen ✓'):(isKO?'· No Pen/SO':'· No Pen')}${myPred.redCard!==undefined&&myPred.redCard!==''?(myPred.redCard==='Y'?' &nbsp;· 🟥 Red':' &nbsp;· No Red'):''}${advanceLabel}</span>
       </div>
       ${hasResult && myPts !== null ? `<div style="text-align:center;padding-bottom:10px"><span class="pts-badge ${ptsClass(myPts)}">${myPts} pts</span></div>` : ""}
+      ${canReopen ? `<div style="text-align:center;padding-bottom:10px"><button onclick="reopenPrediction(${m.id})" style="background:none;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.5);border-radius:7px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">✏️ Edit pick</button></div>` : ""}
     `;
   }
 
