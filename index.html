@@ -355,10 +355,10 @@ function startFirestoreSync() {
 
 // Rebuild knockout matches from current standings + saved third-place assignments
 function refreshKnockout() {
-  // Build progressively: resolved slots fill from standings, unresolved stay as labels.
-  // We always attempt the build so confirmed teams appear as soon as their group firms up.
+  // Build progressively: R32 is the fixed official bracket; R16 fills from R32 winners.
   const built = buildR32();
-  state.knockout.matches = built.matches;
+  const r16 = buildR16(built.matches);
+  state.knockout.matches = built.matches.concat(r16);
 }
 
 async function pushDoc(docName, obj) {
@@ -553,6 +553,37 @@ function buildR32() {
   }));
   // No manual third-place assignment needed anymore — bracket is fixed.
   return { matches, thirdSlots: 0, thirdAssigned: 0 };
+}
+
+// Determine the winning TEAM NAME of a knockout match from its entered result.
+// Uses result.winner ("A"/"B") which submitResult sets (including who advanced on level scores).
+function knockoutWinnerTeam(match) {
+  const r = state.results[match.id];
+  if (!r || !r.entered) return null;
+  if (r.winner === "A") return match.teamA;
+  if (r.winner === "B") return match.teamB;
+  return null; // shouldn't happen for knockouts (always a winner)
+}
+
+// Build the Round of 16 from R32 winners. Teams fill in as R32 results are entered.
+function buildR16(r32Matches) {
+  const byMatchNo = {};
+  r32Matches.forEach(m => { byMatchNo[m.matchNo] = m; });
+
+  return R16_STRUCTURE.map(slot => {
+    const [feedA, feedB] = slot.feeds;
+    const srcA = byMatchNo[feedA], srcB = byMatchNo[feedB];
+    const teamA = srcA ? knockoutWinnerTeam(srcA) : null;
+    const teamB = srcB ? knockoutWinnerTeam(srcB) : null;
+    return {
+      id: slot.id, stage: "Round of 16", round: "R16",
+      matchNo: slot.matchNo, date: slot.date, time: slot.time, venue: slot.venue,
+      teamA: teamA || `Winner #${feedA}`,
+      teamB: teamB || `Winner #${feedB}`,
+      teamAResolved: !!teamA, teamBResolved: !!teamB,
+      feeds: slot.feeds,
+    };
+  });
 }
 
 // Human label for an unresolved slot side (kept for backward-compat; unused now)
@@ -1631,13 +1662,23 @@ function renderBracket() {
   // Bracket is now the official fixed bracket, so all 16 matchups are set.
   const matchCards = built.matches.map(m => renderBracketTile(m, built));
 
+  // R16: fills in as R32 winners are decided
+  const r16 = buildR16(built.matches);
+  const r16Resolved = r16.filter(m => m.teamAResolved && m.teamBResolved).length;
+  const r16Cards = r16.map(m => renderBracketTile(m, { matches: built.matches.concat(r16) }));
+
   return `
     ${topHtml}
     <div class="section-title">Round of 32 — Bracket ${MULTIPLIERS["Round of 32"]?`· ${MULTIPLIERS["Round of 32"]}× points`:""}</div>
     <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:12px;line-height:1.5">
-      View-only bracket. Enter scores from the Today or Upcoming tabs. "Advances to" shows the path forward.
+      View-only bracket. Enter scores from the Today or Upcoming tabs.
     </div>
     ${matchCards.join("")}
+    <div class="section-title" style="margin-top:20px">Round of 16 — Bracket ${MULTIPLIERS["Round of 16"]?`· ${MULTIPLIERS["Round of 16"]}× points`:""}</div>
+    <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:12px;line-height:1.5">
+      <strong style="color:#2ecc71">${r16Resolved} / 8</strong> matchups set. Teams fill in automatically as Round of 32 winners are decided.
+    </div>
+    ${r16Cards.join("")}
   `;
 }
 
@@ -1647,15 +1688,29 @@ function renderBracket() {
 // Pairs are by official bracket. Each pair shares an r16 match number (89-96).
 // Verified from CBS: USA/Bosnia (81) winner meets Belgium/Senegal (82) winner.
 // Pairs follow the bracket order; matchNos grouped two-by-two into R16.
+// Official R16 structure (NBC/FIFA). Each R16 match fed by two R32 match winners.
+// matchNo 89-96, with dates/times/venues.
+const R16_STRUCTURE = [
+  { id:201, matchNo:89, date:"Jul 4", time:"5:00 PM",  venue:"Philadelphia",  feeds:[74,77] },  // Germany/Paraguay W vs France/Sweden W  (Paraguay vs France)
+  { id:202, matchNo:90, date:"Jul 4", time:"1:00 PM",  venue:"Houston",       feeds:[73,75] },  // SA/Canada W vs Netherlands/Morocco W    (Canada vs Morocco)
+  { id:203, matchNo:91, date:"Jul 5", time:"4:00 PM",  venue:"New York/NJ",   feeds:[76,78] },  // Brazil/Japan W vs Ivory Coast/Norway W  (Brazil vs Norway)
+  { id:204, matchNo:92, date:"Jul 5", time:"8:00 PM",  venue:"Mexico City",   feeds:[79,80] },  // Mexico/Ecuador W vs England/DR Congo W   (Mexico vs England)
+  { id:205, matchNo:93, date:"Jul 6", time:"3:00 PM",  venue:"Dallas",        feeds:[83,84] },  // Portugal/Croatia W vs Spain/Austria W
+  { id:206, matchNo:94, date:"Jul 6", time:"8:00 PM",  venue:"Seattle",       feeds:[81,82] },  // USA/Bosnia W vs Belgium/Senegal W
+  { id:207, matchNo:95, date:"Jul 7", time:"12:00 PM", venue:"Atlanta",       feeds:[86,88] },  // Egypt/Australia W vs Colombia/Ghana W
+  { id:208, matchNo:96, date:"Jul 7", time:"4:00 PM",  venue:"Vancouver",     feeds:[85,87] },  // Switzerland/Iran W vs Argentina/CapeVerde W
+];
+
+// R32 → R16 mapping derived from R16_STRUCTURE (authoritative).
 const R32_TO_R16 = {
-  74:{r16:89}, 77:{r16:89},   // Germany/Paraguay  ↔ France/Sweden
-  73:{r16:90}, 75:{r16:90},   // SA/Canada         ↔ Netherlands/Morocco
-  76:{r16:91}, 78:{r16:91},   // Brazil/Japan      ↔ Ivory Coast/Norway
-  79:{r16:92}, 80:{r16:92},   // Mexico/Ecuador    ↔ England/DR Congo
-  81:{r16:93}, 82:{r16:93},   // USA/Bosnia        ↔ Belgium/Senegal (CONFIRMED)
-  83:{r16:94}, 84:{r16:94},   // Portugal/Croatia  ↔ Spain/Austria
-  85:{r16:95}, 86:{r16:95},   // Switzerland/Iran  ↔ Egypt/Australia
-  87:{r16:96}, 88:{r16:96},   // Argentina/CapeVerde ↔ Colombia/Ghana
+  74:{r16:89}, 77:{r16:89},
+  73:{r16:90}, 75:{r16:90},
+  76:{r16:91}, 78:{r16:91},
+  79:{r16:92}, 80:{r16:92},
+  83:{r16:93}, 84:{r16:93},
+  81:{r16:94}, 82:{r16:94},
+  86:{r16:95}, 88:{r16:95},
+  85:{r16:96}, 87:{r16:96},
 };
 
 // Who else could the winner face? Find the other R32 match feeding the same R16 slot.
