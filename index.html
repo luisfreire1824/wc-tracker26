@@ -1754,6 +1754,10 @@ function renderBracket() {
   return renderCircularBracket();
 }
 
+// Bracket-leaf order: R32 matchNos arranged so each converging pair is angularly adjacent.
+// Derived by walking the bracket tree from the Final down. This is what makes rings nest cleanly.
+const BRACKET_ORDER = [74, 77, 73, 75, 83, 84, 81, 82, 76, 78, 79, 80, 86, 88, 85, 87];
+
 // ── Circular bracket ──────────────────────────────────────────────────────────
 // Outer ring = 32 R32 teams (evenly spaced). Each inner ring is one round.
 // A team keeps its angular position as it advances inward, so rings read cleanly.
@@ -1789,10 +1793,14 @@ function renderCircularBracket() {
     return `<clipPath id="${clip}"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath>${inner}<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${border}" stroke-width="${bw}"/>`;
   };
 
-  // ── Outer ring: 16 matches evenly spaced; each match = two adjacent flags ──
+  // ── Outer ring: 16 matches placed in BRACKET_ORDER so feeder pairs nest cleanly ──
   const teamAngle = {};
   const matchAngle = {};
-  r32.forEach((m, idx) => {
+  const r32ByNo = {};
+  r32.forEach(m => { r32ByNo[m.matchNo] = m; });
+  BRACKET_ORDER.forEach((matchNo, idx) => {
+    const m = r32ByNo[matchNo];
+    if (!m) return;
     const base = (idx / 16) * 360;
     const sep = (360/16) * 0.42;
     const aA = base - sep/2, aB = base + sep/2;
