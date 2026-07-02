@@ -1423,12 +1423,68 @@ function renderStandings(t, completedCount) {
       }
     </div>
     ${renderLeadBreakdown()}
-    <div class="standings-card">
-      <div class="result-label" style="margin-bottom:8px">Progress</div>
-      <div class="progress-row"><span style="color:rgba(255,255,255,0.6)">Group Stage</span><span style="font-weight:700">${completedCount} / ${GROUP_MATCHES.length}</span></div>
-      <div class="progress-bar"><div class="progress-fill" style="width:${(completedCount/GROUP_MATCHES.length)*100}%"></div></div>
-    </div>
+    ${renderMatchBreakdown()}
     ${renderCumulativeLead()}
+  `;
+}
+
+// Head-to-head record + hit rate per player
+function renderMatchBreakdown() {
+  const st = computeStats();
+  const L = st.players.luis, B = st.players.bibi;
+  if (st.scoredMatches === 0) return "";
+
+  // Hit rate: matches with points / matches predicted (predicted - blanks = hits)
+  const lHits = L.predicted - L.blanks, bHits = B.predicted - B.blanks;
+  const lRate = L.predicted > 0 ? Math.round((lHits / L.predicted) * 100) : 0;
+  const bRate = B.predicted > 0 ? Math.round((bHits / B.predicted) * 100) : 0;
+
+  const bar = (val, total, color) => {
+    const pct = total > 0 ? (val / total) * 100 : 0;
+    return `<div style="height:7px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;margin-top:4px"><div style="height:100%;width:${pct}%;background:${color};border-radius:4px"></div></div>`;
+  };
+
+  return `
+    <div class="section-title">Head-to-Head 🥊</div>
+    <div class="standings-card">
+      <div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:6px">
+        <div>
+          <div style="font-size:28px;font-weight:800;color:#5dade2">${st.rowWins.luis}</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5)">Luis wins</div>
+        </div>
+        <div>
+          <div style="font-size:28px;font-weight:800;color:rgba(255,255,255,0.4)">${st.rowWins.tie}</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5)">Tied</div>
+        </div>
+        <div>
+          <div style="font-size:28px;font-weight:800;color:#bb8fce">${st.rowWins.bibi}</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5)">Bibi wins</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,0.35);text-align:center;line-height:1.5">
+        Across ${st.scoredMatches} scored match${st.scoredMatches===1?'':'es'} — who out-scored the other each match.
+      </div>
+    </div>
+    <div class="section-title">Hit Rate 🎯</div>
+    <div class="standings-card">
+      <div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;font-size:13px">
+          <span style="color:#5dade2;font-weight:600">Luis</span>
+          <span style="color:rgba(255,255,255,0.8)"><strong>${lHits}/${L.predicted}</strong> <span style="color:rgba(255,255,255,0.4)">(${lRate}%)</span></span>
+        </div>
+        ${bar(lHits, L.predicted, "#3498db")}
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;font-size:13px">
+          <span style="color:#bb8fce;font-weight:600">Bibi</span>
+          <span style="color:rgba(255,255,255,0.8)"><strong>${bHits}/${B.predicted}</strong> <span style="color:rgba(255,255,255,0.4)">(${bRate}%)</span></span>
+        </div>
+        ${bar(bHits, B.predicted, "#9b59b6")}
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:10px;line-height:1.5">
+        Matches where you scored at least some points, out of matches you locked a prediction on.
+      </div>
+    </div>
   `;
 }
 
