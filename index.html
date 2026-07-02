@@ -1755,10 +1755,9 @@ function renderBracket() {
 }
 
 // ── Circular bracket ──────────────────────────────────────────────────────────
-// Outer ring = 32 R32 teams (16 matches). Rings inward: R16, QF, SF, then Final at center.
-// Flags only; tap a flag/match to see details. Winners highlighted as results come in.
+// Outer ring = 32 R32 teams (evenly spaced). Each inner ring is one round.
+// A team keeps its angular position as it advances inward, so rings read cleanly.
 function renderCircularBracket() {
-  // Gather all knockout matches by round
   const km = state.knockout.matches || [];
   const r32 = km.filter(m => m.round === "R32").sort((a,b)=>a.matchNo-b.matchNo);
   const r16 = km.filter(m => m.round === "R16").sort((a,b)=>a.matchNo-b.matchNo);
@@ -1768,134 +1767,105 @@ function renderCircularBracket() {
   const third = km.filter(m => m.round === "3rd");
 
   const SIZE = 1000, C = SIZE/2;
-  // Ring radii (outer to inner)
-  const R = { R32: 452, R16: 355, QF: 262, SF: 175, Final: 92 };
-  const flagR = { R32: 34, R16: 30, QF: 28, SF: 26, Final: 30 };
+  const R = { R32: 460, R16: 350, QF: 250, SF: 158, Final: 78 };
+  const fr = { R32: 24, R16: 24, QF: 23, SF: 23, Final: 27 };
 
-  // The 16 R32 matches are arranged around the circle. To mirror the reference image,
-  // matches 73-80 go down the RIGHT side (top to bottom), 81-88 up the LEFT side (bottom to top).
-  // We place each match's two teams as adjacent flags, and each subsequent round's node
-  // sits at the angular midpoint of its two feeder matches.
+  const deg2rad = d => (d - 90) * Math.PI / 180;
+  const pt = (a, r) => ({ x: C + r * Math.cos(deg2rad(a)), y: C + r * Math.sin(deg2rad(a)) });
 
-  // Assign an angle (degrees, 0 = top, clockwise) to each of the 16 R32 matches.
-  // 16 matches evenly spaced → but we pair them so feeders converge. Use bracket order.
-  // Bracket halves: top half feeds Final side A, bottom half side B.
-  // Order around circle (clockwise from top): the reference shows a specific layout;
-  // we approximate with even spacing following match number.
-  const nR32 = r32.length; // 16
-  // Each match occupies a slot; its two teams sit at slot center ± small offset.
-  const matchAngle = {}; // matchNo -> center angle (deg)
-  r32.forEach((m, i) => {
-    // Distribute 16 matches around 360°, starting at top, clockwise
-    matchAngle[m.matchNo] = (i / nR32) * 360;
-  });
+  let flags = "", lines = "", hitAreas = "";
 
-  const deg2rad = d => (d - 90) * Math.PI / 180; // -90 so 0° = top
-  const pt = (angleDeg, radius) => ({
-    x: C + radius * Math.cos(deg2rad(angleDeg)),
-    y: C + radius * Math.sin(deg2rad(angleDeg)),
-  });
-
-  let flags = "";
-  let lines = "";
-  let hitAreas = "";
-
-  // Helper: render a flag circle for a team at a position
-  const flagCircle = (team, resolved, cx, cy, r, matchId, isWinner) => {
+  const flagCircle = (team, resolved, cx, cy, r, key, isWinner) => {
     const code = resolved ? FLAG_CODES[team] : null;
-    const clip = `clip${matchId}_${Math.round(cx)}_${Math.round(cy)}`;
-    const border = isWinner ? "#2ecc71" : (resolved ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.12)");
-    const bw = isWinner ? 3.5 : 1.5;
+    const clip = `c${key}`;
+    const border = isWinner ? "#2ecc71" : (resolved ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.1)");
+    const bw = isWinner ? 3 : 1.5;
     let inner;
     if (code) {
       inner = `<image href="https://flagcdn.com/w80/${code}.png" x="${cx-r}" y="${cy-r}" width="${r*2}" height="${r*2}" clip-path="url(#${clip})" preserveAspectRatio="xMidYMid slice"/>`;
     } else {
-      inner = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#1a2942"/><text x="${cx}" y="${cy+4}" text-anchor="middle" font-size="${r*0.9}" fill="rgba(255,255,255,0.25)">?</text>`;
+      inner = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#152238"/><text x="${cx}" y="${cy+r*0.35}" text-anchor="middle" font-size="${r}" fill="rgba(255,255,255,0.2)">?</text>`;
     }
-    return `
-      <clipPath id="${clip}"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath>
-      ${inner}
-      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${border}" stroke-width="${bw}"/>`;
+    return `<clipPath id="${clip}"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath>${inner}<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${border}" stroke-width="${bw}"/>`;
   };
 
-  // Draw R32 outer ring: two flags per match, at slot center ± offset
-  const teamAngleOffset = (360 / nR32) * 0.28; // half-separation between the two teams in a match
-  const r32NodeAngle = {}; // matchNo -> angle (for connector origin)
-  r32.forEach(m => {
-    const a = matchAngle[m.matchNo];
-    r32NodeAngle[m.matchNo] = a;
-    const aA = a - teamAngleOffset, aB = a + teamAngleOffset;
+  // ── Outer ring: 16 matches evenly spaced; each match = two adjacent flags ──
+  const teamAngle = {};
+  const matchAngle = {};
+  r32.forEach((m, idx) => {
+    const base = (idx / 16) * 360;
+    const sep = (360/16) * 0.42;
+    const aA = base - sep/2, aB = base + sep/2;
+    teamAngle[m.matchNo + "A"] = aA;
+    teamAngle[m.matchNo + "B"] = aB;
+    matchAngle[m.matchNo] = base;
     const pA = pt(aA, R.R32), pB = pt(aB, R.R32);
-    const winner = knockoutWinnerTeam(m);
-    flags += flagCircle(m.teamA, m.teamAResolved, pA.x, pA.y, flagR.R32, m.id+"a", winner && winner===m.teamA);
-    flags += flagCircle(m.teamB, m.teamBResolved, pB.x, pB.y, flagR.R32, m.id+"b", winner && winner===m.teamB);
-    // connector from each team inward to the match node (on R16 ring radius)
-    const nodeP = pt(a, R.R16 + 40);
-    lines += `<path d="M ${pA.x} ${pA.y} L ${nodeP.x} ${nodeP.y} L ${pB.x} ${pB.y}" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="1.5"/>`;
-    // tap area for the match (invisible larger circle over the pair midpoint)
-    const mid = pt(a, R.R32);
-    hitAreas += `<circle cx="${mid.x}" cy="${mid.y}" r="${flagR.R32+30}" fill="transparent" style="cursor:pointer" onclick="showMatchPopup(${m.id})"/>`;
+    const w = knockoutWinnerTeam(m);
+    flags += flagCircle(m.teamA, m.teamAResolved, pA.x, pA.y, fr.R32, m.id+"a", w&&w===m.teamA);
+    flags += flagCircle(m.teamB, m.teamBResolved, pB.x, pB.y, fr.R32, m.id+"b", w&&w===m.teamB);
+    const node = pt(base, R.R16 + fr.R16 + 14);
+    lines += `<path d="M ${pA.x} ${pA.y} L ${node.x} ${node.y} L ${pB.x} ${pB.y}" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1.5"/>`;
+    const mid = pt(base, R.R32);
+    hitAreas += `<circle cx="${mid.x}" cy="${mid.y}" r="${fr.R32+18}" fill="transparent" style="cursor:pointer" onclick="showMatchPopup(${m.id})"/>`;
   });
 
-  // Generic ring renderer for R16/QF/SF: each match sits at the midpoint angle of its two feeders.
-  function renderInnerRing(matches, ringR, fr, feederAngleMap) {
-    const nodeAngle = {};
+  // ── Inner rings: match sits at midpoint angle of its two feeders ──
+  function ring(matches, ringR, ballR, feederAngle, prevRingR) {
+    const out = {};
     matches.forEach(m => {
       const [fa, fb] = m.feeds;
-      const a1 = feederAngleMap[fa], a2 = feederAngleMap[fb];
-      // midpoint angle (handle wraparound)
-      let mid = (a1 + a2) / 2;
-      if (Math.abs(a1 - a2) > 180) mid = (mid + 180) % 360;
-      nodeAngle[m.matchNo] = mid;
-      const aA = mid - (360/matches.length)*0.16, aB = mid + (360/matches.length)*0.16;
-      // For inner rings, place the two competing teams close together at the node
-      const pA = pt(mid - fr*0.06, ringR), pB = pt(mid + fr*0.06, ringR);
-      const winner = knockoutWinnerTeam(m);
-      // draw feeder connector lines from feeders' angles (outer) to this node
-      const outerFromA = pt(a1, ringR + (ringR===R.R16? 55 : 70));
-      const outerFromB = pt(a2, ringR + (ringR===R.R16? 55 : 70));
-      const nodeP = pt(mid, ringR + fr + 6);
-      lines += `<path d="M ${outerFromA.x} ${outerFromA.y} L ${nodeP.x} ${nodeP.y} L ${outerFromB.x} ${outerFromB.y}" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1.5"/>`;
-      flags += flagCircle(m.teamA, m.teamAResolved, pA.x, pA.y, fr, m.id+"a", winner && winner===m.teamA);
-      flags += flagCircle(m.teamB, m.teamBResolved, pB.x, pB.y, fr, m.id+"b", winner && winner===m.teamB);
+      let a1 = feederAngle[fa], a2 = feederAngle[fb];
+      let diff = a2 - a1;
+      if (diff > 180) diff -= 360;
+      if (diff < -180) diff += 360;
+      let mid = (a1 + diff/2 + 360) % 360;
+      out[m.matchNo] = mid;
+      const sep = Math.min(Math.abs(diff) * 0.28, 14);
+      const aA = mid - sep/2, aB = mid + sep/2;
+      const pA = pt(aA, ringR), pB = pt(aB, ringR);
+      const w = knockoutWinnerTeam(m);
+      const f1 = pt(a1, prevRingR - ballR - 4), f2 = pt(a2, prevRingR - ballR - 4);
+      const node = pt(mid, ringR + ballR + 10);
+      lines += `<path d="M ${f1.x} ${f1.y} L ${node.x} ${node.y} L ${f2.x} ${f2.y}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.5"/>`;
+      flags += flagCircle(m.teamA, m.teamAResolved, pA.x, pA.y, ballR, m.id+"a", w&&w===m.teamA);
+      flags += flagCircle(m.teamB, m.teamBResolved, pB.x, pB.y, ballR, m.id+"b", w&&w===m.teamB);
       const mp = pt(mid, ringR);
-      hitAreas += `<circle cx="${mp.x}" cy="${mp.y}" r="${fr+20}" fill="transparent" style="cursor:pointer" onclick="showMatchPopup(${m.id})"/>`;
+      hitAreas += `<circle cx="${mp.x}" cy="${mp.y}" r="${ballR+12}" fill="transparent" style="cursor:pointer" onclick="showMatchPopup(${m.id})"/>`;
     });
-    return nodeAngle;
+    return out;
   }
 
-  const r16Angles = renderInnerRing(r16, R.R16, flagR.R16, r32NodeAngle);
-  const qfAngles = renderInnerRing(qf, R.QF, flagR.QF, r16Angles);
-  const sfAngles = renderInnerRing(sf, R.SF, flagR.SF, qfAngles);
+  const a16 = ring(r16, R.R16, fr.R16, matchAngle, R.R32);
+  const aQF = ring(qf, R.QF, fr.QF, a16, R.R16);
+  const aSF = ring(sf, R.SF, fr.SF, aQF, R.QF);
 
-  // Final at center: two finalist flags flanking the trophy
   if (fin.length) {
     const f = fin[0];
-    const winner = knockoutWinnerTeam(f);
-    const pA = pt(270, R.Final), pB = pt(90, R.Final); // left and right of center
-    flags += flagCircle(f.teamA, f.teamAResolved, pA.x, pA.y, flagR.Final, f.id+"a", winner && winner===f.teamA);
-    flags += flagCircle(f.teamB, f.teamBResolved, pB.x, pB.y, flagR.Final, f.id+"b", winner && winner===f.teamB);
-    hitAreas += `<circle cx="${C}" cy="${C}" r="${R.Final+30}" fill="transparent" style="cursor:pointer" onclick="showMatchPopup(${f.id})"/>`;
+    const w = knockoutWinnerTeam(f);
+    let a1 = aSF[f.feeds[0]] ?? 270, a2 = aSF[f.feeds[1]] ?? 90;
+    const pA = pt(a1, R.Final), pB = pt(a2, R.Final);
+    const f1 = pt(a1, R.SF - fr.SF - 4), f2 = pt(a2, R.SF - fr.SF - 4);
+    lines += `<path d="M ${f1.x} ${f1.y} L ${C} ${C} L ${f2.x} ${f2.y}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1.5"/>`;
+    flags += flagCircle(f.teamA, f.teamAResolved, pA.x, pA.y, fr.Final, f.id+"a", w&&w===f.teamA);
+    flags += flagCircle(f.teamB, f.teamBResolved, pB.x, pB.y, fr.Final, f.id+"b", w&&w===f.teamB);
+    hitAreas += `<circle cx="${C}" cy="${C}" r="${R.Final+fr.Final}" fill="transparent" style="cursor:pointer" onclick="showMatchPopup(${f.id})"/>`;
   }
 
-  // Trophy at the very center
-  const trophy = `<text x="${C}" y="${C+18}" text-anchor="middle" font-size="54">🏆</text>`;
+  const trophy = `<text x="${C}" y="${C+14}" text-anchor="middle" font-size="40">🏆</text>`;
 
-  // Champion label if final is decided
   let champBanner = "";
   if (fin.length) {
     const champ = knockoutWinnerTeam(fin[0]);
     if (champ) champBanner = `<div style="text-align:center;margin-top:14px;font-size:16px;font-weight:800;color:#f9c22e">🏆 Champion: ${esc(champ)}</div>`;
   }
 
-  // Count resolved per round for the legend
   const resolvedCount = r => r.filter(m=>m.teamAResolved&&m.teamBResolved).length;
 
   return `
     <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:8px;line-height:1.5;text-align:center">
       Tap any matchup for details. Green ring = winner. Bracket fills toward the center as results come in.
     </div>
-    <div style="width:100%;overflow:hidden;border-radius:12px;background:radial-gradient(circle at center, #0d1b2e 0%, #0a1424 70%)">
+    <div style="width:100%;overflow:hidden;border-radius:12px;background:radial-gradient(circle at center, #0d1b2e 0%, #0a1424 72%)">
       <svg viewBox="0 0 ${SIZE} ${SIZE}" style="width:100%;height:auto;display:block">
         ${lines}
         ${flags}
@@ -1910,7 +1880,7 @@ function renderCircularBracket() {
       ${[["Round of 32",r32],["Round of 16",r16],["Quarter-Finals",qf],["Semi-Finals",sf],["Third Place",third],["Final",fin]].map(([label,arr]) =>
         `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid rgba(255,255,255,0.05)">
           <span style="color:rgba(255,255,255,0.7)">${label}</span>
-          <span style="font-weight:700;color:${resolvedCount(arr)===arr.length?'#2ecc71':'#f9c22e'}">${resolvedCount(arr)} / ${arr.length} set</span>
+          <span style="font-weight:700;color:${resolvedCount(arr)===arr.length&&arr.length>0?'#2ecc71':'#f9c22e'}">${resolvedCount(arr)} / ${arr.length} set</span>
         </div>`).join("")}
     </div>
   `;
