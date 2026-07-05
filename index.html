@@ -528,18 +528,18 @@ const R32_OFFICIAL = [
   { id:102, matchNo:76, date:"Jun 29", time:"1:00 PM",  venue:"Houston",       teamA:"Brazil",       teamB:"Japan" },
   { id:103, matchNo:74, date:"Jun 29", time:"4:30 PM",  venue:"Boston",        teamA:"Germany",      teamB:"Paraguay" },
   { id:104, matchNo:75, date:"Jun 29", time:"9:00 PM",  venue:"Monterrey",     teamA:"Netherlands",  teamB:"Morocco" },
-  { id:105, matchNo:78, date:"Jun 30", time:"6:00 PM",  venue:"Dallas",        teamA:"Ivory Coast",  teamB:"Norway" },
-  { id:106, matchNo:77, date:"Jun 30", time:"10:00 PM", venue:"New York/NJ",   teamA:"France",       teamB:"Sweden" },
-  { id:107, matchNo:79, date:"Jun 30", time:"9:00 PM",  venue:"Mexico City",   teamA:"Mexico",       teamB:"Ecuador" },
+  { id:105, matchNo:78, date:"Jun 30", time:"1:00 PM",  venue:"Dallas",        teamA:"Ivory Coast",  teamB:"Norway" },
+  { id:106, matchNo:77, date:"Jun 30", time:"5:00 PM",  venue:"New York/NJ",   teamA:"France",       teamB:"Sweden" },
+  { id:107, matchNo:79, date:"Jun 30", time:"10:00 PM", venue:"Mexico City",   teamA:"Mexico",       teamB:"Ecuador" },
   { id:108, matchNo:80, date:"Jul 1",  time:"12:00 PM", venue:"Atlanta",       teamA:"England",      teamB:"DR Congo" },
   { id:109, matchNo:82, date:"Jul 1",  time:"4:00 PM",  venue:"Seattle",       teamA:"Belgium",      teamB:"Senegal" },
-  { id:110, matchNo:81, date:"Jul 1",  time:"8:00 PM",  venue:"San Francisco", teamA:"USA",          teamB:"Bosnia & Herz." },
+  { id:110, matchNo:81, date:"Jul 1",  time:"8:00 PM",  venue:"Santa Clara",   teamA:"USA",          teamB:"Bosnia & Herz." },
   { id:111, matchNo:84, date:"Jul 2",  time:"3:00 PM",  venue:"Los Angeles",   teamA:"Spain",        teamB:"Austria" },
   { id:112, matchNo:83, date:"Jul 2",  time:"7:00 PM",  venue:"Toronto",       teamA:"Portugal",     teamB:"Croatia" },
   { id:113, matchNo:85, date:"Jul 2",  time:"11:00 PM", venue:"Vancouver",     teamA:"Switzerland",  teamB:"Algeria" },
-  { id:114, matchNo:86, date:"Jul 3",  time:"3:00 PM",  venue:"Miami",         teamA:"Egypt",        teamB:"Australia" },
-  { id:115, matchNo:87, date:"Jul 3",  time:"6:00 PM",  venue:"Kansas City",   teamA:"Argentina",    teamB:"Cape Verde" },
-  { id:116, matchNo:88, date:"Jul 3",  time:"9:30 PM",  venue:"Dallas",        teamA:"Colombia",     teamB:"Ghana" },
+  { id:114, matchNo:88, date:"Jul 3",  time:"2:00 PM",  venue:"Dallas",        teamA:"Australia",    teamB:"Egypt" },
+  { id:115, matchNo:86, date:"Jul 3",  time:"6:00 PM",  venue:"Miami",         teamA:"Argentina",    teamB:"Cape Verde" },
+  { id:116, matchNo:87, date:"Jul 3",  time:"9:30 PM",  venue:"Kansas City",   teamA:"Colombia",     teamB:"Ghana" },
 ];
 
 // Is a specific group's matches all entered?
@@ -755,6 +755,7 @@ function flag(team) {
   const code = FLAG_CODES[team];
   if (!code) return '<span style="font-size:24px">🏳️</span>';
   return `<img src="https://flagcdn.com/w80/${code}.png" alt="${esc(team)}" loading="lazy"
+    onerror="this.onerror=null;this.style.display='none';"
     style="width:40px;height:auto;border-radius:4px;box-shadow:0 1px 4px rgba(0,0,0,0.4)">`;
 }
 function ptsClass(p) { return p >= 40 ? "high" : p >= 20 ? "mid" : ""; }
@@ -1900,7 +1901,7 @@ function renderCircularBracket() {
     const left = (fl.x/SVG*100).toFixed(2), top = (fl.y/SVG*100).toFixed(2);
     const tapAttr = fl.id ? `onclick="showMatchPopup(${fl.id})"` : "";
     if (code){
-      flagsHTML += `<img class="brflag ${fl.cls}" src="https://flagcdn.com/w160/${code}.png" alt="${esc(fl.team)}" style="left:${left}%;top:${top}%" ${tapAttr}/>`;
+      flagsHTML += `<img class="brflag ${fl.cls}" src="https://flagcdn.com/w160/${code}.png" alt="${esc(fl.team)}" style="left:${left}%;top:${top}%" ${tapAttr} loading="lazy" onerror="this.onerror=null;this.removeAttribute('src');this.style.background='#334';"/>`;
     } else {
       flagsHTML += `<div class="brflag ${fl.cls}" style="left:${left}%;top:${top}%;background:#334;" ${tapAttr}></div>`;
     }
