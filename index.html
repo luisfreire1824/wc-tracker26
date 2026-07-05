@@ -881,6 +881,25 @@ window.submitResult = async function(id) {
   render();
   await pushDoc("results", state.results);
 };
+window.reopenResult = async function(id) {
+  const r = state.results[id];
+  if (!r || !r.entered) return;
+  if (!confirm("Edit this result? It will re-open for correction and re-score once you confirm the new result.")) return;
+  const m = allMatches().find(x => x.id === id);
+  const isKO = m && matchStage(m) !== "Group";
+  // Load the entered result back into the draft so the form is pre-filled
+  resultDrafts[id] = {
+    scoreA: r.scoreA, scoreB: r.scoreB,
+    penalty: r.penalty || "", redCard: r.redCard || "",
+    overtime: isKO ? (r.overtime || "") : "",
+  };
+  // Clear the entered result so the form re-appears, and open it
+  delete state.results[id];
+  resultOpen[id] = true;
+  saveLocalCache();
+  render();
+  await pushDoc("results", state.results);
+};
 window.uploadOfficialResults = function() {
   const input = document.createElement("input");
   input.type = "file";
@@ -1324,12 +1343,15 @@ function renderCard(m) {
               <span class="final-extras">${result.draw==='Y'?'Draw':''} ${result.penalty==='Y'?'· Pen':''} ${result.redCard==='Y'?'· 🟥':''}</span>
             </div>
           </div>
-          <div style="display:flex;gap:6px">
+          <div style="display:flex;gap:6px;align-items:center">
             ${luisPts!==null?`<span class="pts-badge ${ptsClass(luisPts)}">L: ${luisPts}</span>`:""}
             ${bibiPts!==null?`<span class="pts-badge ${ptsClass(bibiPts)}">B: ${bibiPts}</span>`:""}
           </div>
         </div>
         ${validHtml}
+        <div style="text-align:right;margin-top:8px">
+          <button onclick="reopenResult(${m.id})" style="background:none;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.55);border-radius:7px;padding:6px 14px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit">✏️ Edit result</button>
+        </div>
       </div>
     `;
   }
