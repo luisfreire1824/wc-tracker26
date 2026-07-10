@@ -262,6 +262,7 @@ let completedFilter = "";     // team name filter ("" = all)
 let completedConfFilter = "";  // confederation filter ("" = all)
 let collapsedStages = {};      // { stageName: true } when collapsed
 let chartWindow = "all";       // "5" | "10" | "all" for cumulative lead chart
+let accRound = "All";          // round filter for the Accuracy card
 
 function loadLocalCache() {
   try {
@@ -974,6 +975,7 @@ window.setCompletedFilter = function(v) { completedFilter = v; render(); };
 window.setCompletedConfFilter = function(v) { completedConfFilter = v; completedFilter = ""; render(); };
 window.toggleStageCollapse = function(stage) { collapsedStages[stage] = !collapsedStages[stage]; render(); };
 window.setChartWindow = function(w) { chartWindow = w; render(); };
+window.setAccRound = function(r) { accRound = r; render(); };
 
 window.updateMultiplier = async function(stage, value) {
   const num = Number(value);
@@ -2180,14 +2182,16 @@ function renderStandingsTables(standings) {
 }
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
-function computeStats() {
+function computeStats(roundFilter) {
   const players = { luis: emptyPlayerStats(), bibi: emptyPlayerStats() };
   let rowWins = { luis: 0, bibi: 0, tie: 0 };
   let totalGoalsActual = 0, scoredMatches = 0;
   let biggestSwing = { diff: 0, match: null, winner: null };
 
-  // Process matches in chronological order for streaks + cumulative timeline
+  // Process matches in chronological order for streaks + cumulative timeline.
+  // roundFilter (optional): "Group" | "Round of 32" | ... limits which matches count (for the Accuracy filter).
   const ordered = allMatches().filter(m => (state.results[m.id]||{}).entered)
+    .filter(m => !roundFilter || roundFilter === "All" || matchStage(m) === roundFilter)
     .sort((a, b) => {
       const da = matchDate(a), db = matchDate(b);
       if (da && db && da.getTime() !== db.getTime()) return da - db;
@@ -2225,6 +2229,11 @@ function computeStats() {
         const predWinner = Number(p.scoreA) > Number(p.scoreB) ? "A" : "B";
         if (predWinner === result.winner) { s.cat.winner += SCORING.winner; s.hits.winner++; matchPts += SCORING.winner; }
         s.decisiveGames++;
+      }
+      // Overtime spotting (knockouts) — parallel counters for the Accuracy card ONLY; does not affect points.
+      if (matchStage(m) !== "Group" && p.overtime !== undefined && p.overtime !== "" && result.overtime !== undefined && result.overtime !== "") {
+        s.otEligible = (s.otEligible||0) + 1;
+        if (p.overtime === result.overtime) s.otHits = (s.otHits||0) + 1;
       }
 
       if (p.penalty === result.penalty) { s.cat.penalty += SCORING.penalty; s.hits.penalty++; matchPts += SCORING.penalty; }
@@ -2418,14 +2427,46 @@ function renderStats() {
     </div>
 
     <div class="section-title">Accuracy</div>
-    <div class="standings-card">
-      ${accRow("Team A exact score", L.hits.exactA, L.predicted, B.hits.exactA, B.predicted)}
-      ${accRow("Team B exact score", L.hits.exactB, L.predicted, B.hits.exactB, B.predicted)}
-      ${accRow("Winner (decisive games)", L.hits.winner, L.decisiveGames, B.hits.winner, B.decisiveGames)}
-      ${accRow("Draw spotted", L.hits.draw, L.drawGames, B.hits.draw, B.drawGames)}
-      ${accRow("Penalty call", L.hits.penalty, L.predicted, B.hits.penalty, B.predicted)}
-      ${accRow("Red card call", L.hits.redCard, L.redCardEligible, B.hits.redCard, B.redCardEligible)}
-    </div>
+    ${(() => {
+      // Which rounds actually have scored matches, for the filter buttons
+      const roundsPresent = [];
+      const seen = {};
+      allMatches().forEach(m => {
+        if (!(state.results[m.id]||{}).entered) return;
+        const stg = matchStage(m);
+        if (!seen[stg]) { seen[stg] = true; roundsPresent.push(stg); }
+      });
+      // Order rounds logically
+      const order = ["Group","Round of 32","Round of 16","Quarter-Final","Semi-Final","Third Place","Final"];
+      roundsPresent.sort((a,b) => order.indexOf(a) - order.indexOf(b));
+      const opts = ["All", ...roundsPresent];
+      const shortLabel = { "All":"All", "Group":"Groups", "Round of 32":"R32", "Round of 16":"R16", "Quarter-Final":"QF", "Semi-Final":"SF", "Third Place":"3rd", "Final":"Final" };
+      const btns = opts.map(r =>
+        `<button onclick="setAccRound('${r}')" style="padding:5px 10px;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid ${accRound===r?'#5dade2':'rgba(255,255,255,0.15)'};background:${accRound===r?'rgba(93,173,226,0.15)':'transparent'};color:${accRound===r?'#5dade2':'rgba(255,255,255,0.6)'}">${shortLabel[r]||r}</button>`
+      ).join("");
+      // Filtered stats for the selected round
+      const fst = computeStats(accRound);
+      const FL = fst.players.luis, FB = fst.players.bibi;
+      const emptyNote = FL.predicted === 0 && FB.predicted === 0
+        ? `<div style="font-size:12px;color:rgba(255,255,255,0.4);text-align:center;padding:10px 0">No locked predictions scored for this round yet.</div>` : "";
+      return `
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${btns}</div>
+        <div class="standings-card">
+          ${emptyNote || `
+          ${accRow("Team A exact score", FL.hits.exactA, FL.predicted, FB.hits.exactA, FB.predicted)}
+          ${accRow("Team B exact score", FL.hits.exactB, FL.predicted, FB.hits.exactB, FB.predicted)}
+          ${accRow("Winner (decisive games)", FL.hits.winner, FL.decisiveGames, FB.hits.winner, FB.decisiveGames)}
+          ${accRound==="Group"
+            ? accRow("Draw spotted", FL.hits.draw, FL.drawGames, FB.hits.draw, FB.drawGames)
+            : (accRound==="All"
+                ? accRow("Draw / OT spotted", FL.hits.draw+(FL.otHits||0), FL.drawGames+(FL.otEligible||0), FB.hits.draw+(FB.otHits||0), FB.drawGames+(FB.otEligible||0))
+                : accRow("Overtime spotted", FL.otHits||0, FL.otEligible||0, FB.otHits||0, FB.otEligible||0))}
+          ${accRow("Penalty call", FL.hits.penalty, FL.predicted, FB.hits.penalty, FB.predicted)}
+          ${accRow("Red card call", FL.hits.redCard, FL.redCardEligible, FB.hits.redCard, FB.redCardEligible)}
+          `}
+        </div>
+      `;
+    })()}
 
     <div class="section-title">Head to Head</div>
     <div class="standings-card">
