@@ -825,11 +825,13 @@ window.lockPrediction = async function(id) {
   const userKey = state.user.toLowerCase();
   state.predictions[id] = state.predictions[id] || {};
   state.predictions[id][userKey] = { ...d, locked: true, lockedAt: new Date().toISOString(), late: late };
+
   saveLocalCache();
   delete drafts[id];
   render();
   await pushDoc("predictions", state.predictions);
 };
+
 window.toggleResultForm = function(id) { resultOpen[id] = !resultOpen[id]; render(); };
 window.reopenPrediction = async function(id) {
   if ((state.results[id]||{}).entered) { alert("Result already entered — can't edit."); return; }
