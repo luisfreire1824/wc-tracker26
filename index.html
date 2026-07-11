@@ -251,6 +251,7 @@ let state = {
   predictions: {},  // matchId -> { luis: {scoreA, scoreB, draw, penalty, locked}, bibi: {...} }
   results: {},      // matchId -> { scoreA, scoreB, winner, draw, penalty, entered }
   knockout: { matches: [], r32Assignments: {} }, // r32Assignments: { "101_b": "Ecuador", ... }
+  stickers: {},     // teamName -> { "1":"have"|"dup", ... } (absent number = need). Shared household.
 };
 // Per-card UI drafts (not persisted)
 let drafts = {};      // matchId -> prediction draft
@@ -277,6 +278,7 @@ function loadLocalCache() {
       if (saved.multipliers) MULTIPLIERS = { ...DEFAULT_MULTIPLIERS, ...saved.multipliers };
       if (saved.late) LATE = { ...DEFAULT_LATE, ...saved.late };
       if (saved.knockout) state.knockout = { matches: [], r32Assignments: {}, ...saved.knockout };
+      if (saved.stickers) state.stickers = saved.stickers;
     }
   } catch (e) { console.error("local load failed", e); }
 }
@@ -292,6 +294,7 @@ function saveLocalCache() {
       multipliers: MULTIPLIERS,
       late: LATE,
       knockout: { r32Assignments: state.knockout.r32Assignments || {} },
+      stickers: state.stickers || {},
     }));
   } catch (e) { console.error("local cache failed", e); }
 }
@@ -352,6 +355,17 @@ function startFirestoreSync() {
       } catch (e) { console.error("knockout parse failed", e); }
     }
   }, err => { console.error("knockout listener error", err); });
+
+  db.collection("tracker").doc("stickers").onSnapshot(doc => {
+    fsConnected = true;
+    if (doc.exists) {
+      try {
+        state.stickers = JSON.parse(doc.data().json || "{}");
+        saveLocalCache();
+        render();
+      } catch (e) { console.error("stickers parse failed", e); }
+    }
+  }, err => { console.error("stickers listener error", err); });
 }
 
 // Rebuild knockout matches from current standings + saved third-place assignments
@@ -765,6 +779,22 @@ function ptsClass(p) { return p >= 40 ? "high" : p >= 20 ? "mid" : ""; }
 window.selectUser = function(name) { state.user = name; saveState(); render(); };
 window.switchUser = function() { state.user = null; saveState(); render(); };
 window.setTab = function(t) { state.tab = t; render(); };
+
+// Sticker tracker: cycle a sticker's state need -> have -> dup -> need
+let stickerExpanded = {}; // teamName -> bool (which teams are expanded; session only)
+window.toggleStickerTeam = function(team) { stickerExpanded[team] = !stickerExpanded[team]; render(); };
+window.cycleSticker = async function(team, num) {
+  state.stickers[team] = state.stickers[team] || {};
+  const cur = state.stickers[team][num]; // undefined | "have" | "dup"
+  if (!cur) state.stickers[team][num] = "have";
+  else if (cur === "have") state.stickers[team][num] = "dup";
+  else delete state.stickers[team][num]; // dup -> need (remove)
+  saveLocalCache();
+  render();
+  await pushDoc("stickers", state.stickers);
+};
+window.setStickerFilter = function(f) { stickerFilter = f; render(); };
+let stickerFilter = "all"; // all | incomplete | dups
 window.updateSetting = async function(group, field, value) {
   const num = Number(value);
   if (isNaN(num) || num < 0) return;
@@ -1089,6 +1119,8 @@ function render() {
     bodyHtml = renderBracket();
   } else if (state.tab === "stats") {
     bodyHtml = renderStats();
+  } else if (state.tab === "stickers") {
+    bodyHtml = renderStickers();
   } else {
     bodyHtml = renderStandings(t, completed.length);
   }
@@ -1112,6 +1144,7 @@ function render() {
         <button class="tab ${state.tab==='standings'?'active':''}" onclick="setTab('standings')">Standings</button>
         <button class="tab ${state.tab==='bracket'?'active':''}" onclick="setTab('bracket')">Bracket</button>
         <button class="tab ${state.tab==='stats'?'active':''}" onclick="setTab('stats')">Stats</button>
+        <button class="tab ${state.tab==='stickers'?'active':''}" onclick="setTab('stickers')">📒 Stickers</button>
         <button class="tab ${state.tab==='settings'?'active':''}" onclick="setTab('settings')">⚙️</button>
       </div>
       <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
@@ -2392,6 +2425,101 @@ function accRow(label, lHits, lTotal, bHits, bTotal) {
         <strong style="color:#bb8fce">${bPct}%</strong> <span style="font-size:10px;color:rgba(255,255,255,0.3)">(${bHits}/${bTotal})</span>
       </span>
     </div>`;
+}
+
+// ── Panini sticker tracker (shared household collection) ──
+// 48 teams × 20 stickers = 960. Each: need (default) / have / dup. Tap cycles.
+function renderStickers() {
+  const teams = Object.keys(CONFEDERATION);
+  const PER_TEAM = 20;
+
+  // Totals across all teams
+  let totalHave = 0, totalDup = 0;
+  const total = teams.length * PER_TEAM;
+  teams.forEach(t => {
+    const s = state.stickers[t] || {};
+    for (let n = 1; n <= PER_TEAM; n++) {
+      if (s[n] === "have") totalHave++;
+      else if (s[n] === "dup") totalDup++;
+    }
+  });
+  const pctComplete = Math.round((totalHave / total) * 100);
+
+  // Filter teams by current filter
+  const teamMatchesFilter = (t) => {
+    const s = state.stickers[t] || {};
+    let have = 0, dup = 0;
+    for (let n = 1; n <= PER_TEAM; n++) {
+      if (s[n] === "have") have++; else if (s[n] === "dup") dup++;
+    }
+    if (stickerFilter === "incomplete") return have < PER_TEAM;
+    if (stickerFilter === "dups") return dup > 0;
+    return true;
+  };
+  const shownTeams = teams.filter(teamMatchesFilter);
+
+  const filterBtn = (key, label) =>
+    `<button onclick="setStickerFilter('${key}')" style="padding:5px 11px;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid ${stickerFilter===key?'#5dade2':'rgba(255,255,255,0.15)'};background:${stickerFilter===key?'rgba(93,173,226,0.15)':'transparent'};color:${stickerFilter===key?'#5dade2':'rgba(255,255,255,0.6)'}">${label}</button>`;
+
+  const teamCards = shownTeams.map(team => {
+    const s = state.stickers[team] || {};
+    let have = 0, dup = 0;
+    for (let n = 1; n <= PER_TEAM; n++) {
+      if (s[n] === "have") have++; else if (s[n] === "dup") dup++;
+    }
+    const complete = have === PER_TEAM;
+    const expanded = stickerExpanded[team];
+    const code = FLAG_CODES[team];
+
+    let grid = "";
+    if (expanded) {
+      const cells = [];
+      for (let n = 1; n <= PER_TEAM; n++) {
+        const st = s[n]; // undefined | have | dup
+        let bg, border, color, mark = n;
+        if (st === "have") { bg = "rgba(46,204,113,0.2)"; border = "#2ecc71"; color = "#2ecc71"; }
+        else if (st === "dup") { bg = "rgba(243,156,18,0.2)"; border = "#f39c12"; color = "#f9c22e"; mark = n + "＋"; }
+        else { bg = "transparent"; border = "rgba(255,255,255,0.15)"; color = "rgba(255,255,255,0.5)"; }
+        cells.push(`<button onclick="cycleSticker('${esc(team)}',${n})" style="aspect-ratio:1/1;border-radius:8px;border:1.5px solid ${border};background:${bg};color:${color};font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center">${mark}</button>`);
+      }
+      grid = `
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:10px">${cells.join("")}</div>
+        <div style="display:flex;gap:14px;justify-content:center;margin-top:10px;font-size:10px;color:rgba(255,255,255,0.4)">
+          <span>tap: need → <span style="color:#2ecc71">have</span> → <span style="color:#f9c22e">dup＋</span></span>
+        </div>`;
+    }
+
+    return `
+      <div class="standings-card" style="padding:0;overflow:hidden;margin-bottom:8px">
+        <button onclick="toggleStickerTeam('${esc(team)}')" style="width:100%;background:none;border:none;cursor:pointer;font-family:inherit;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;color:#fff">
+          <div style="display:flex;align-items:center;gap:10px">
+            ${code?`<img src="https://flagcdn.com/w40/${code}.png" alt="${esc(team)}" style="width:26px;height:auto;border-radius:3px" onerror="this.style.display='none'">`:""}
+            <span style="font-size:14px;font-weight:700">${esc(team)}</span>
+            ${complete?'<span style="font-size:14px">✅</span>':''}
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:12px;font-weight:700;color:${complete?'#2ecc71':'rgba(255,255,255,0.6)'}">${have}/${PER_TEAM}${dup?` <span style="color:#f9c22e">·${dup}dup</span>`:''}</span>
+            <span style="color:rgba(255,255,255,0.4);font-size:12px">${expanded?'▲':'▼'}</span>
+          </div>
+        </button>
+        <div style="padding:0 14px ${expanded?'14px':'0'}">${grid}</div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="standings-card" style="text-align:center;background:linear-gradient(135deg,rgba(93,173,226,0.15),rgba(155,89,182,0.15))">
+      <div style="font-size:13px;color:rgba(255,255,255,0.6);font-weight:600;letter-spacing:0.5px">PANINI COLLECTION</div>
+      <div style="font-size:30px;font-weight:800;margin:4px 0">${totalHave} <span style="font-size:16px;color:rgba(255,255,255,0.5)">/ ${total}</span></div>
+      <div class="progress-bar" style="margin:8px 0"><div class="progress-fill" style="width:${pctComplete}%"></div></div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.55)">${pctComplete}% complete · <span style="color:#f9c22e">${totalDup} duplicates to trade</span></div>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:12px">
+      ${filterBtn("all","All 48")}
+      ${filterBtn("incomplete","Incomplete")}
+      ${filterBtn("dups","Have dups")}
+    </div>
+    ${shownTeams.length ? teamCards : '<div class="empty-state">No teams match this filter.</div>'}
+  `;
 }
 
 function renderStats() {
