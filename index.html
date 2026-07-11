@@ -226,7 +226,10 @@ const FLAG_CODES = {
   "Uruguay":"uy","Belgium":"be","Egypt":"eg","Iran":"ir","New Zealand":"nz","France":"fr",
   "Senegal":"sn","Iraq":"iq","Norway":"no","Argentina":"ar","Algeria":"dz","Austria":"at",
   "Jordan":"jo","Portugal":"pt","DR Congo":"cd","Uzbekistan":"uz","Colombia":"co",
-  "England":"gb-eng","Croatia":"hr","Ghana":"gh","Panama":"pa"
+  "England":"gb-eng","Croatia":"hr","Ghana":"gh","Panama":"pa",
+  // Album (Panini) name aliases — the sticker book uses some different spellings
+  "Korea Republic":"kr","Bosnia-Herzegovina":"ba","Türkiye":"tr","Curaçao":"cw",
+  "Côte d'Ivoire":"ci","IR Iran":"ir","Cabo Verde":"cv","Congo DR":"cd"
 };
 // Confederation mapping for all 48 teams
 const CONFEDERATION = {
@@ -2428,15 +2431,30 @@ function accRow(label, lHits, lTotal, bHits, bTotal) {
 }
 
 // ── Panini sticker tracker (shared household collection) ──
-// 48 teams × 20 stickers = 960. Each: need (default) / have / dup. Tap cycles.
+// Album layout: 12 groups (A-L), 4 teams each, in the physical book's order.
+// 20 stickers per team = 960 total.
+const ALBUM_GROUPS = [
+  { g:"A", teams:["Mexico","South Africa","Korea Republic","Czechia"] },
+  { g:"B", teams:["Canada","Bosnia-Herzegovina","Qatar","Switzerland"] },
+  { g:"C", teams:["Brazil","Morocco","Haiti","Scotland"] },
+  { g:"D", teams:["USA","Paraguay","Australia","Türkiye"] },
+  { g:"E", teams:["Germany","Curaçao","Côte d'Ivoire","Ecuador"] },
+  { g:"F", teams:["Netherlands","Japan","Sweden","Tunisia"] },
+  { g:"G", teams:["Belgium","Egypt","IR Iran","New Zealand"] },
+  { g:"H", teams:["Spain","Cabo Verde","Saudi Arabia","Uruguay"] },
+  { g:"I", teams:["France","Senegal","Iraq","Norway"] },
+  { g:"J", teams:["Argentina","Algeria","Austria","Jordan"] },
+  { g:"K", teams:["Portugal","Congo DR","Uzbekistan","Colombia"] },
+  { g:"L", teams:["England","Croatia","Ghana","Panama"] },
+];
 function renderStickers() {
-  const teams = Object.keys(CONFEDERATION);
   const PER_TEAM = 20;
+  const allTeams = ALBUM_GROUPS.flatMap(gr => gr.teams);
 
-  // Totals across all teams
+  // Totals
   let totalHave = 0, totalDup = 0;
-  const total = teams.length * PER_TEAM;
-  teams.forEach(t => {
+  const total = allTeams.length * PER_TEAM;
+  allTeams.forEach(t => {
     const s = state.stickers[t] || {};
     for (let n = 1; n <= PER_TEAM; n++) {
       if (s[n] === "have") totalHave++;
@@ -2445,37 +2463,37 @@ function renderStickers() {
   });
   const pctComplete = Math.round((totalHave / total) * 100);
 
-  // Filter teams by current filter
-  const teamMatchesFilter = (t) => {
-    const s = state.stickers[t] || {};
+  const counts = (team) => {
+    const s = state.stickers[team] || {};
     let have = 0, dup = 0;
-    for (let n = 1; n <= PER_TEAM; n++) {
-      if (s[n] === "have") have++; else if (s[n] === "dup") dup++;
-    }
-    if (stickerFilter === "incomplete") return have < PER_TEAM;
-    if (stickerFilter === "dups") return dup > 0;
+    for (let n = 1; n <= PER_TEAM; n++) { if (s[n]==="have") have++; else if (s[n]==="dup") dup++; }
+    return { have, dup, need: PER_TEAM - have };
+  };
+  const teamMatchesFilter = (t) => {
+    const c = counts(t);
+    if (stickerFilter === "incomplete") return c.have < PER_TEAM;
+    if (stickerFilter === "dups") return c.dup > 0;
     return true;
   };
-  const shownTeams = teams.filter(teamMatchesFilter);
 
   const filterBtn = (key, label) =>
     `<button onclick="setStickerFilter('${key}')" style="padding:5px 11px;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;border:1px solid ${stickerFilter===key?'#5dade2':'rgba(255,255,255,0.15)'};background:${stickerFilter===key?'rgba(93,173,226,0.15)':'transparent'};color:${stickerFilter===key?'#5dade2':'rgba(255,255,255,0.6)'}">${label}</button>`;
 
-  const teamCards = shownTeams.map(team => {
+  const renderTeamCard = (team) => {
+    const c = counts(team);
     const s = state.stickers[team] || {};
-    let have = 0, dup = 0;
-    for (let n = 1; n <= PER_TEAM; n++) {
-      if (s[n] === "have") have++; else if (s[n] === "dup") dup++;
-    }
-    const complete = have === PER_TEAM;
+    const complete = c.have === PER_TEAM;
     const expanded = stickerExpanded[team];
     const code = FLAG_CODES[team];
+
+    // Mini progress bar in the collapsed row
+    const pct = Math.round((c.have / PER_TEAM) * 100);
 
     let grid = "";
     if (expanded) {
       const cells = [];
       for (let n = 1; n <= PER_TEAM; n++) {
-        const st = s[n]; // undefined | have | dup
+        const st = s[n];
         let bg, border, color, mark = n;
         if (st === "have") { bg = "rgba(46,204,113,0.2)"; border = "#2ecc71"; color = "#2ecc71"; }
         else if (st === "dup") { bg = "rgba(243,156,18,0.2)"; border = "#f39c12"; color = "#f9c22e"; mark = n + "＋"; }
@@ -2484,41 +2502,64 @@ function renderStickers() {
       }
       grid = `
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:10px">${cells.join("")}</div>
-        <div style="display:flex;gap:14px;justify-content:center;margin-top:10px;font-size:10px;color:rgba(255,255,255,0.4)">
-          <span>tap: need → <span style="color:#2ecc71">have</span> → <span style="color:#f9c22e">dup＋</span></span>
-        </div>`;
+        <div style="text-align:center;margin-top:10px;font-size:10px;color:rgba(255,255,255,0.4)">tap: need → <span style="color:#2ecc71">have</span> → <span style="color:#f9c22e">dup＋</span> → need</div>`;
     }
 
     return `
       <div class="standings-card" style="padding:0;overflow:hidden;margin-bottom:8px">
-        <button onclick="toggleStickerTeam('${esc(team)}')" style="width:100%;background:none;border:none;cursor:pointer;font-family:inherit;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;color:#fff">
-          <div style="display:flex;align-items:center;gap:10px">
-            ${code?`<img src="https://flagcdn.com/w40/${code}.png" alt="${esc(team)}" style="width:26px;height:auto;border-radius:3px" onerror="this.style.display='none'">`:""}
-            <span style="font-size:14px;font-weight:700">${esc(team)}</span>
-            ${complete?'<span style="font-size:14px">✅</span>':''}
+        <button onclick="toggleStickerTeam('${esc(team)}')" style="width:100%;background:none;border:none;cursor:pointer;font-family:inherit;padding:11px 14px;color:#fff">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0">
+              ${code?`<img src="https://flagcdn.com/w40/${code}.png" alt="${esc(team)}" style="width:26px;height:auto;border-radius:3px;flex-shrink:0" onerror="this.style.display='none'">`:""}
+              <span style="font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(team)}</span>
+              ${complete?'<span style="font-size:13px">✅</span>':''}
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+              <span style="font-size:13px;font-weight:800;color:${complete?'#2ecc71':'#fff'}">${c.have}<span style="color:rgba(255,255,255,0.4);font-weight:600">/${PER_TEAM}</span></span>
+              ${c.need>0?`<span style="font-size:11px;color:#e67e22;font-weight:600">${c.need} need</span>`:''}
+              ${c.dup>0?`<span style="font-size:11px;color:#f9c22e;font-weight:600">${c.dup} dup</span>`:''}
+              <span style="color:rgba(255,255,255,0.4);font-size:12px">${expanded?'▲':'▼'}</span>
+            </div>
           </div>
-          <div style="display:flex;align-items:center;gap:10px">
-            <span style="font-size:12px;font-weight:700;color:${complete?'#2ecc71':'rgba(255,255,255,0.6)'}">${have}/${PER_TEAM}${dup?` <span style="color:#f9c22e">·${dup}dup</span>`:''}</span>
-            <span style="color:rgba(255,255,255,0.4);font-size:12px">${expanded?'▲':'▼'}</span>
+          <div style="height:5px;background:rgba(255,255,255,0.08);border-radius:3px;margin-top:9px;overflow:hidden">
+            <div style="height:100%;width:${pct}%;background:${complete?'#2ecc71':'linear-gradient(90deg,#5dade2,#9b59b6)'};border-radius:3px"></div>
           </div>
         </button>
         <div style="padding:0 14px ${expanded?'14px':'0'}">${grid}</div>
       </div>`;
+  };
+
+  // Build group sections in album order
+  const groupSections = ALBUM_GROUPS.map(gr => {
+    const teamsShown = gr.teams.filter(teamMatchesFilter);
+    if (!teamsShown.length) return "";
+    // Group-level totals
+    let gHave = 0;
+    gr.teams.forEach(t => { gHave += counts(t).have; });
+    const gTotal = gr.teams.length * PER_TEAM;
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin:16px 2px 8px">
+        <div style="font-size:13px;font-weight:800;color:#f9c22e;letter-spacing:0.5px">GROUP ${gr.g}</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.45);font-weight:600">${gHave}/${gTotal}</div>
+      </div>
+      ${teamsShown.map(renderTeamCard).join("")}`;
   }).join("");
+
+  const anyShown = ALBUM_GROUPS.some(gr => gr.teams.some(teamMatchesFilter));
 
   return `
     <div class="standings-card" style="text-align:center;background:linear-gradient(135deg,rgba(93,173,226,0.15),rgba(155,89,182,0.15))">
-      <div style="font-size:13px;color:rgba(255,255,255,0.6);font-weight:600;letter-spacing:0.5px">PANINI COLLECTION</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.6);font-weight:600;letter-spacing:0.5px">📒 PANINI COLLECTION</div>
       <div style="font-size:30px;font-weight:800;margin:4px 0">${totalHave} <span style="font-size:16px;color:rgba(255,255,255,0.5)">/ ${total}</span></div>
       <div class="progress-bar" style="margin:8px 0"><div class="progress-fill" style="width:${pctComplete}%"></div></div>
-      <div style="font-size:12px;color:rgba(255,255,255,0.55)">${pctComplete}% complete · <span style="color:#f9c22e">${totalDup} duplicates to trade</span></div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.55)">${pctComplete}% complete · <span style="color:#e67e22">${total-totalHave} needed</span> · <span style="color:#f9c22e">${totalDup} dups to trade</span></div>
     </div>
-    <div style="display:flex;gap:6px;margin-bottom:12px">
-      ${filterBtn("all","All 48")}
+    <div style="display:flex;gap:6px;margin-bottom:4px">
+      ${filterBtn("all","All")}
       ${filterBtn("incomplete","Incomplete")}
       ${filterBtn("dups","Have dups")}
     </div>
-    ${shownTeams.length ? teamCards : '<div class="empty-state">No teams match this filter.</div>'}
+    ${anyShown ? groupSections : '<div class="empty-state">No teams match this filter.</div>'}
   `;
 }
 
