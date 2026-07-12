@@ -2263,18 +2263,33 @@ function computeStats(roundFilter) {
       if (hitB) { s.cat.exactB += SCORING.scoreB; s.hits.exactB++; matchPts += SCORING.scoreB; }
       if (hitA && hitB) s.perfectScores++;
 
-      if (result.draw === "Y") {
+      const isKOm = matchStage(m) !== "Group";
+      if (isKOm) {
+        // Knockouts: winner = predicted ADVANCING team (level pred uses explicit advance);
+        // the "draw" bucket is replaced by OVERTIME.
+        const pa0 = Number(p.scoreA), pb0 = Number(p.scoreB);
+        let predAdv = p.advance;
+        if (!predAdv && pa0 !== pb0) predAdv = pa0 > pb0 ? "A" : "B";
+        if (predAdv) {
+          s.decisiveGames++;
+          if (predAdv === result.winner) { s.cat.winner += SCORING.winner; s.hits.winner++; matchPts += SCORING.winner; }
+        }
+        // Overtime bucket (scores points, and feeds the Accuracy card)
+        if (p.overtime !== undefined && p.overtime !== "" && result.overtime !== undefined && result.overtime !== "") {
+          s.otEligible = (s.otEligible||0) + 1;
+          if (p.overtime === result.overtime) {
+            s.otHits = (s.otHits||0) + 1;
+            s.cat.draw += (SCORING.overtime || 0); // reuse the draw category slot for OT attribution
+            matchPts += (SCORING.overtime || 0);
+          }
+        }
+      } else if (result.draw === "Y") {
         if (p.draw === "Y") { s.cat.draw += SCORING.draw; s.hits.draw++; matchPts += SCORING.draw; }
         s.drawGames++;
       } else {
         const predWinner = Number(p.scoreA) > Number(p.scoreB) ? "A" : "B";
         if (predWinner === result.winner) { s.cat.winner += SCORING.winner; s.hits.winner++; matchPts += SCORING.winner; }
         s.decisiveGames++;
-      }
-      // Overtime spotting (knockouts) — parallel counters for the Accuracy card ONLY; does not affect points.
-      if (matchStage(m) !== "Group" && p.overtime !== undefined && p.overtime !== "" && result.overtime !== undefined && result.overtime !== "") {
-        s.otEligible = (s.otEligible||0) + 1;
-        if (p.overtime === result.overtime) s.otHits = (s.otHits||0) + 1;
       }
 
       if (p.penalty === result.penalty) { s.cat.penalty += SCORING.penalty; s.hits.penalty++; matchPts += SCORING.penalty; }
@@ -2361,17 +2376,21 @@ function computeStats(roundFilter) {
   });
 
   // ── Magic number inputs ──
-  // Remaining matches = matches NOT yet scored. Max points still available per player
-  // depends on whether they can still predict (group matches are pre-known; knockouts appear later).
-  const maxPerGame = SCORING.scoreA + SCORING.scoreB + SCORING.winner + SCORING.draw + SCORING.penalty + (SCORING.redCard || 0);
+  // Remaining matches = matches NOT yet scored. Max points still available per player.
+  // Group matches have a "draw" bucket; knockouts have an "overtime" bucket instead.
+  const maxBase = (stage) => SCORING.scoreA + SCORING.scoreB + SCORING.winner
+    + ((stage === "Group") ? SCORING.draw : (SCORING.overtime || 0))
+    + SCORING.penalty + (SCORING.redCard || 0);
+  const maxPerGame = maxBase("Group"); // kept for backward-compat consumers
   let remainingMaxLuis = 0, remainingMaxBibi = 0, remainingCount = 0;
   allMatches().forEach(m => {
     if ((state.results[m.id]||{}).entered) return;
     remainingCount++;
-    const mult = stageMultiplier(matchStage(m));
-    // Both players can still earn up to maxPerGame * mult on each unplayed match
-    remainingMaxLuis += maxPerGame * mult;
-    remainingMaxBibi += maxPerGame * mult;
+    const stg = matchStage(m);
+    const mult = stageMultiplier(stg);
+    const per = maxBase(stg) * mult;
+    remainingMaxLuis += per;
+    remainingMaxBibi += per;
   });
 
   return { players, rowWins, scoredMatches, totalGoalsActual, biggestSwing, timeline, bestStreak, curStreak,
