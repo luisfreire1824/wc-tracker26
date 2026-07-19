@@ -789,12 +789,41 @@ window.setTab = function(t) { state.tab = t; render(); };
 // Sticker tracker: cycle a sticker's state need -> have -> dup -> need
 let stickerExpanded = {}; // teamName -> bool (which teams are expanded; session only)
 window.toggleStickerTeam = function(team) { stickerExpanded[team] = !stickerExpanded[team]; render(); };
+// Long-press detection (mobile): hold ~600ms on a sticker to clear it back to "need"
+let _stickerPressTimer = null;
+let _stickerLongFired = false;
+
 window.cycleSticker = async function(team, num) {
+  // If a long-press just fired the reset, swallow the trailing click
+  if (_stickerLongFired) { _stickerLongFired = false; return; }
   state.stickers[team] = state.stickers[team] || {};
   const cur = state.stickers[team][num]; // undefined | "have" | "dup"
+  // Safe cycle: need -> have -> dup -> have -> dup ...
+  // Once you own a sticker, tapping only toggles have<->dup. A stray tap can never
+  // erase a logged sticker. Use long-press (resetSticker) to deliberately clear back to "need".
   if (!cur) state.stickers[team][num] = "have";
   else if (cur === "have") state.stickers[team][num] = "dup";
-  else delete state.stickers[team][num]; // dup -> need (remove)
+  else state.stickers[team][num] = "have"; // dup -> have (traded the spare away)
+  saveLocalCache();
+  render();
+  await pushDoc("stickers", state.stickers);
+};
+window.stickerPressStart = function(team, num) {
+  _stickerLongFired = false;
+  clearTimeout(_stickerPressTimer);
+  _stickerPressTimer = setTimeout(() => {
+    _stickerLongFired = true;
+    resetSticker(team, num);
+  }, 600);
+};
+window.stickerPressEnd = function() { clearTimeout(_stickerPressTimer); };
+
+// Long-press to clear a sticker back to "need" (deliberate undo — confirms first)
+window.resetSticker = async function(team, num) {
+  const cur = (state.stickers[team] || {})[num];
+  if (!cur) return; // already "need"
+  if (!confirm(`Clear sticker #${num} back to "need"? (You currently have it marked as ${cur === "dup" ? "a duplicate" : "owned"}.)`)) return;
+  delete state.stickers[team][num];
   saveLocalCache();
   render();
   await pushDoc("stickers", state.stickers);
@@ -1127,6 +1156,8 @@ function render() {
     bodyHtml = renderStats();
   } else if (state.tab === "stickers") {
     bodyHtml = renderStickers();
+  } else if (state.tab === "report") {
+    bodyHtml = renderReport();
   } else {
     bodyHtml = renderStandings(t, completed.length);
   }
@@ -1151,6 +1182,7 @@ function render() {
         <button class="tab ${state.tab==='bracket'?'active':''}" onclick="setTab('bracket')">Bracket</button>
         <button class="tab ${state.tab==='stats'?'active':''}" onclick="setTab('stats')">Stats</button>
         <button class="tab ${state.tab==='stickers'?'active':''}" onclick="setTab('stickers')">📒 Stickers</button>
+        ${tournamentComplete() ? `<button class="tab ${state.tab==='report'?'active':''}" onclick="setTab('report')" style="${state.tab!=='report'?'color:#f9c22e':''}">🏆 Report</button>` : ""}
         <button class="tab ${state.tab==='settings'?'active':''}" onclick="setTab('settings')">⚙️</button>
       </div>
       <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
@@ -2470,6 +2502,247 @@ const ALBUM_GROUPS = [
   { g:"L", teams:["England","Croatia","Ghana","Panama"] },
 ];
 // Special (non-team) sticker sets. key -> { label, count }. Stored in state.stickers[key].
+// ══════════════════════════════════════════════════════════════════════════════
+// TOURNAMENT REPORT — end-of-tournament recap + keepsake
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Compute auto-generated awards from the tournament data.
+// Each award: { icon, title, winner, detail, blurb }
+function computeAwards(st) {
+  const L = st.players.luis, B = st.players.bibi;
+  const awards = [];
+  const nameOf = (k) => k === "luis" ? "Luis" : "Bibi";
+  const pct = (n, d) => d > 0 ? Math.round((n/d)*100) : 0;
+
+  // 🎯 Sharpshooter — most exact scores (both teams correct on a match = perfect)
+  {
+    const lx = L.hits.exactA + L.hits.exactB, bx = B.hits.exactA + B.hits.exactB;
+    const w = lx === bx ? "tie" : (lx > bx ? "luis" : "bibi");
+    awards.push({ icon:"🎯", title:"Sharpshooter", winner:w,
+      detail: `Luis ${lx} · Bibi ${bx}`,
+      blurb:"Most exact team scores called correctly." });
+  }
+  // 🔮 The Oracle — best winner-pick accuracy
+  {
+    const lr = pct(L.hits.winner, L.decisiveGames), br = pct(B.hits.winner, B.decisiveGames);
+    const w = lr === br ? "tie" : (lr > br ? "luis" : "bibi");
+    awards.push({ icon:"🔮", title:"The Oracle", winner:w,
+      detail: `Luis ${lr}% · Bibi ${br}%`,
+      blurb:"Best at calling who actually wins." });
+  }
+  // 💎 Perfect Games — most matches where every bucket hit
+  {
+    const w = L.perfectScores === B.perfectScores ? "tie" : (L.perfectScores > B.perfectScores ? "luis" : "bibi");
+    awards.push({ icon:"💎", title:"Flawless", winner:w,
+      detail: `Luis ${L.perfectScores} · Bibi ${B.perfectScores}`,
+      blurb:"Matches with a perfect exact scoreline." });
+  }
+  // 🥶 Ice Cold — longest streak of winning the match head-to-head
+  {
+    const bs = st.bestStreak || { luis:0, bibi:0 };
+    const w = bs.luis === bs.bibi ? "tie" : (bs.luis > bs.bibi ? "luis" : "bibi");
+    const len = Math.max(bs.luis, bs.bibi);
+    awards.push({ icon:"🥶", title:"Ice Cold", winner:w,
+      detail: len ? `Luis ${bs.luis} · Bibi ${bs.bibi} (best run)` : "—",
+      blurb:"Longest run of out-scoring the other." });
+  }
+  // 💥 Biggest Swing — single match with the largest points gap
+  {
+    const sw = st.biggestSwing || {};
+    if (sw.match) {
+      const w = sw.winner === "Luis" ? "luis" : (sw.winner === "Bibi" ? "bibi" : "tie");
+      awards.push({ icon:"💥", title:"Biggest Swing", winner: w,
+        detail: `${sw.match.teamA} vs ${sw.match.teamB} · +${Math.round(sw.diff)} pts`,
+        blurb:"The single match that moved the needle most." });
+    }
+  }
+  // 🌶️ Spicy Take — most goals predicted across the tournament (boldest scorelines)
+  {
+    const lg = L.fp.totalGoalsPredicted, bg = B.fp.totalGoalsPredicted;
+    const w = lg === bg ? "tie" : (lg > bg ? "luis" : "bibi");
+    awards.push({ icon:"🌶️", title:"Spicy Take", winner:w,
+      detail: `Luis ${lg} goals · Bibi ${bg} goals`,
+      blurb:"Predicted the most goals — who played it open." });
+  }
+  // 🧊 The Wall — fewest goals predicted (most cagey)
+  {
+    const lg = L.fp.totalGoalsPredicted, bg = B.fp.totalGoalsPredicted;
+    const w = lg === bg ? "tie" : (lg < bg ? "luis" : "bibi");
+    awards.push({ icon:"🧊", title:"The Cagey One", winner:w,
+      detail: `Luis ${lg} · Bibi ${bg}`,
+      blurb:"Leaned low-scoring more often." });
+  }
+  // 🟥 Card Shark — best red card call rate
+  {
+    const lr = pct(L.hits.redCard, L.redCardEligible), br = pct(B.hits.redCard, B.redCardEligible);
+    const w = lr === br ? "tie" : (lr > br ? "luis" : "bibi");
+    awards.push({ icon:"🟥", title:"Card Shark", winner:w,
+      detail: `Luis ${lr}% · Bibi ${br}%`,
+      blurb:"Best at sensing a red card coming." });
+  }
+  // ⚽ Spot Kick — best penalty call rate
+  {
+    const lr = pct(L.hits.penalty, L.predicted), br = pct(B.hits.penalty, B.predicted);
+    const w = lr === br ? "tie" : (lr > br ? "luis" : "bibi");
+    awards.push({ icon:"⚽", title:"Spot Kick", winner:w,
+      detail: `Luis ${lr}% · Bibi ${br}%`,
+      blurb:"Best at calling penalties and shootouts." });
+  }
+  // 🏅 Best Single Match — highest points in one game
+  {
+    const lb = L.bestMatch, bb = B.bestMatch;
+    const w = (lb.pts === bb.pts) ? "tie" : (lb.pts > bb.pts ? "luis" : "bibi");
+    const best = w === "bibi" ? bb : lb;
+    awards.push({ icon:"🏅", title:"Match of the Tournament", winner:w,
+      detail: best.match ? `${best.match.teamA} vs ${best.match.teamB} · ${Math.round(best.pts)} pts` : "—",
+      blurb:"Highest-scoring single prediction." });
+  }
+  return awards;
+}
+
+// Signature scoreline — the most-predicted exact scoreline for a player
+function signatureScoreline(p) {
+  const counts = p.fp.scorelineCount || {};
+  let best = null, bestN = 0;
+  Object.keys(counts).forEach(k => { if (counts[k] > bestN) { bestN = counts[k]; best = k; } });
+  return best ? { line: best, n: bestN } : null;
+}
+
+// True once the Final has a result entered — unlocks the end-of-tournament report
+function tournamentComplete() {
+  const f = (state.knockout.matches || []).find(m => m.round === "Final");
+  return !!(f && (state.results[f.id] || {}).entered);
+}
+
+function renderReport() {
+  const st = computeStats();
+  const L = st.players.luis, B = st.players.bibi;
+  const lt = Math.round(L.total), bt = Math.round(B.total);
+  const champion = lt === bt ? null : (lt > bt ? "Luis" : "Bibi");
+  const margin = Math.abs(lt - bt);
+  const awards = computeAwards(st);
+  const pct = (n,d) => d>0 ? Math.round((n/d)*100) : 0;
+
+  // Winner of the actual World Cup (from the bracket), if decided
+  const finalM = (state.knockout.matches||[]).find(m => m.round === "Final");
+  const wcChamp = finalM ? knockoutWinnerTeam(finalM) : null;
+
+  const awardRow = (a) => {
+    const color = a.winner === "luis" ? "#5dade2" : (a.winner === "bibi" ? "#bb8fce" : "rgba(255,255,255,0.5)");
+    const who = a.winner === "luis" ? "Luis" : (a.winner === "bibi" ? "Bibi" : "Tied");
+    return `
+      <div style="display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-bottom:1px solid rgba(255,255,255,0.06)">
+        <div style="font-size:22px;line-height:1;flex-shrink:0;margin-top:1px">${a.icon}</div>
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+            <span style="font-size:13px;font-weight:800">${a.title}</span>
+            <span style="font-size:12px;font-weight:800;color:${color};flex-shrink:0">${who}</span>
+          </div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.55);margin-top:2px">${esc(a.detail)}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.32);margin-top:2px">${esc(a.blurb)}</div>
+        </div>
+      </div>`;
+  };
+
+  const statRow = (label, lv, bv) => {
+    const lNum = parseFloat(String(lv)), bNum = parseFloat(String(bv));
+    const lWin = !isNaN(lNum) && !isNaN(bNum) && lNum > bNum;
+    const bWin = !isNaN(lNum) && !isNaN(bNum) && bNum > lNum;
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px">
+        <span style="color:rgba(255,255,255,0.65)">${label}</span>
+        <span style="display:flex;gap:10px;align-items:baseline">
+          <span style="font-weight:${lWin?'800':'600'};color:${lWin?'#5dade2':'rgba(255,255,255,0.8)'}">${lv}</span>
+          <span style="color:rgba(255,255,255,0.2)">·</span>
+          <span style="font-weight:${bWin?'800':'600'};color:${bWin?'#bb8fce':'rgba(255,255,255,0.8)'}">${bv}</span>
+        </span>
+      </div>`;
+  };
+
+  const sigL = signatureScoreline(L), sigB = signatureScoreline(B);
+
+  return `
+    <!-- Champion banner -->
+    <div class="standings-card" style="text-align:center;background:linear-gradient(135deg,rgba(243,156,18,0.22),rgba(155,89,182,0.18));border-color:rgba(243,156,18,0.4)">
+      <div style="font-size:11px;letter-spacing:1.5px;color:rgba(255,255,255,0.55);font-weight:700">FIFA WORLD CUP 2026</div>
+      <div style="font-size:13px;color:rgba(255,255,255,0.5);margin-top:2px">Luis vs Bibi · Final Report</div>
+      <div style="font-size:46px;margin:10px 0 4px">🏆</div>
+      ${champion ? `
+        <div style="font-size:26px;font-weight:800;color:#f9c22e">${champion} wins</div>
+        <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-top:4px">by ${margin} points</div>
+      ` : `<div style="font-size:24px;font-weight:800;color:#f9c22e">Dead heat!</div>`}
+      <div style="display:flex;justify-content:center;gap:26px;margin-top:14px">
+        <div><div style="font-size:11px;color:#5dade2;font-weight:700">LUIS</div><div style="font-size:24px;font-weight:800">${lt}</div></div>
+        <div><div style="font-size:11px;color:#bb8fce;font-weight:700">BIBI</div><div style="font-size:24px;font-weight:800">${bt}</div></div>
+      </div>
+      ${PAYOUT && PAYOUT.ptsPerUnit ? `<div style="font-size:12px;color:rgba(255,255,255,0.5);margin-top:10px">Payout: $${(margin/PAYOUT.ptsPerUnit*PAYOUT.dollarsPerUnit).toFixed(2)} to ${champion||'nobody'}</div>` : ""}
+      ${wcChamp ? `<div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1)">World Cup winners: <strong style="color:#f9c22e">${esc(wcChamp)}</strong> ${flag(wcChamp)}</div>` : ""}
+    </div>
+
+    <!-- The race -->
+    <div class="section-title">The Race 📈</div>
+    ${renderCumulativeLead()}
+
+    <!-- Head to head -->
+    <div class="section-title">Head-to-Head 🥊</div>
+    <div class="standings-card">
+      <div style="display:flex;justify-content:space-around;text-align:center;margin-bottom:8px">
+        <div><div style="font-size:26px;font-weight:800;color:#5dade2">${st.rowWins.luis}</div><div style="font-size:11px;color:rgba(255,255,255,0.5)">Luis wins</div></div>
+        <div><div style="font-size:26px;font-weight:800;color:rgba(255,255,255,0.4)">${st.rowWins.tie}</div><div style="font-size:11px;color:rgba(255,255,255,0.5)">Tied</div></div>
+        <div><div style="font-size:26px;font-weight:800;color:#bb8fce">${st.rowWins.bibi}</div><div style="font-size:11px;color:rgba(255,255,255,0.5)">Bibi wins</div></div>
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,0.35);text-align:center">Across ${st.scoredMatches} scored matches.</div>
+    </div>
+
+    <!-- The numbers -->
+    <div class="section-title">The Numbers 📊</div>
+    <div class="standings-card">
+      <div style="display:flex;justify-content:flex-end;gap:10px;font-size:10px;font-weight:700;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.1)">
+        <span style="color:#5dade2">LUIS</span><span style="color:rgba(255,255,255,0.2)">·</span><span style="color:#bb8fce">BIBI</span>
+      </div>
+      ${statRow("Total points", lt, bt)}
+      ${statRow("Matches predicted", L.predicted, B.predicted)}
+      ${statRow("Perfect scorelines", L.perfectScores, B.perfectScores)}
+      ${statRow("Team A exact", pct(L.hits.exactA,L.predicted)+"%", pct(B.hits.exactA,B.predicted)+"%")}
+      ${statRow("Team B exact", pct(L.hits.exactB,L.predicted)+"%", pct(B.hits.exactB,B.predicted)+"%")}
+      ${statRow("Winner calls", pct(L.hits.winner,L.decisiveGames)+"%", pct(B.hits.winner,B.decisiveGames)+"%")}
+      ${statRow("Penalty calls", pct(L.hits.penalty,L.predicted)+"%", pct(B.hits.penalty,B.predicted)+"%")}
+      ${statRow("Red card calls", pct(L.hits.redCard,L.redCardEligible)+"%", pct(B.hits.redCard,B.redCardEligible)+"%")}
+      ${statRow("Blank matches", L.blanks, B.blanks)}
+    </div>
+
+    <!-- Awards -->
+    <div class="section-title">Awards 🏅</div>
+    <div class="standings-card">
+      ${awards.map(awardRow).join("")}
+    </div>
+
+    <!-- Fingerprint -->
+    <div class="section-title">Signature 🖋️</div>
+    <div class="standings-card">
+      <div style="display:flex;gap:12px">
+        <div style="flex:1;text-align:center;padding:10px;background:rgba(93,173,226,0.08);border-radius:10px">
+          <div style="font-size:11px;color:#5dade2;font-weight:700;margin-bottom:4px">LUIS</div>
+          <div style="font-size:22px;font-weight:800">${sigL?esc(sigL.line):"—"}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:2px">${sigL?`picked ${sigL.n}×`:""}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:6px">${L.fp.totalGoalsPredicted} goals predicted</div>
+        </div>
+        <div style="flex:1;text-align:center;padding:10px;background:rgba(155,89,182,0.08);border-radius:10px">
+          <div style="font-size:11px;color:#bb8fce;font-weight:700;margin-bottom:4px">BIBI</div>
+          <div style="font-size:22px;font-weight:800">${sigB?esc(sigB.line):"—"}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:2px">${sigB?`picked ${sigB.n}×`:""}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:6px">${B.fp.totalGoalsPredicted} goals predicted</div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:rgba(255,255,255,0.32);margin-top:10px;text-align:center;line-height:1.5">
+        Your most-predicted scoreline — the fingerprint of how each of you reads a game.
+      </div>
+    </div>
+
+    <div style="height:20px"></div>
+  `;
+}
+
 const SPECIAL_SETS = [
   { key:"FWC", label:"FWC — Tournament", count:19 },
   { key:"CC",  label:"CC — Confederations", count:12 },
@@ -2535,11 +2808,14 @@ function renderStickers() {
         if (st === "have") { bg = "rgba(46,204,113,0.2)"; border = "#2ecc71"; color = "#2ecc71"; }
         else if (st === "dup") { bg = "rgba(243,156,18,0.2)"; border = "#f39c12"; color = "#f9c22e"; mark = n + "＋"; }
         else { bg = "transparent"; border = "rgba(255,255,255,0.15)"; color = "rgba(255,255,255,0.5)"; }
-        cells.push(`<button onclick="cycleSticker('${escJs(key)}',${n})" style="aspect-ratio:1/1;border-radius:8px;border:1.5px solid ${border};background:${bg};color:${color};font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center">${mark}</button>`);
+        cells.push(`<button onclick="cycleSticker('${escJs(key)}',${n})" oncontextmenu="event.preventDefault();resetSticker('${escJs(key)}',${n});return false" ontouchstart="stickerPressStart('${escJs(key)}',${n})" ontouchend="stickerPressEnd()" ontouchmove="stickerPressEnd()" style="aspect-ratio:1/1;border-radius:8px;border:1.5px solid ${border};background:${bg};color:${color};font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;display:flex;align-items:center;justify-content:center;-webkit-user-select:none;user-select:none">${mark}</button>`);
       }
       grid = `
         <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-top:10px">${cells.join("")}</div>
-        <div style="text-align:center;margin-top:10px;font-size:10px;color:rgba(255,255,255,0.4)">tap: need → <span style="color:#2ecc71">have</span> → <span style="color:#f9c22e">dup＋</span> → need</div>`;
+        <div style="text-align:center;margin-top:10px;font-size:10px;color:rgba(255,255,255,0.4);line-height:1.6">
+          tap: need → <span style="color:#2ecc71">have</span> ⇄ <span style="color:#f9c22e">dup＋</span><br>
+          <span style="color:rgba(255,255,255,0.3)">traded a spare? tap dup → back to have · long-press to clear</span>
+        </div>`;
     }
 
     return `
