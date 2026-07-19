@@ -2608,6 +2608,164 @@ function signatureScoreline(p) {
   return best ? { line: best, n: bestN } : null;
 }
 
+// Per-round breakdown for the report's story chapters.
+// Returns [{ stage, label, luis, bibi, cumL, cumB, gap, leader, matches }]
+const REPORT_STAGES = [
+  { stage:"Group",         label:"Group Stage" },
+  { stage:"Round of 32",   label:"Round of 32" },
+  { stage:"Round of 16",   label:"Round of 16" },
+  { stage:"Quarter-Final", label:"Quarter-Finals" },
+  { stage:"Semi-Final",    label:"Semi-Finals" },
+  { stage:"Third Place",   label:"Third-Place Match" },
+  { stage:"Final",         label:"The Final" },
+];
+function roundBreakdown() {
+  const out = [];
+  let cumL = 0, cumB = 0;
+  REPORT_STAGES.forEach(sd => {
+    let l = 0, b = 0, n = 0;
+    allMatches().forEach(m => {
+      if (matchStage(m) !== sd.stage) return;
+      const r = state.results[m.id];
+      if (!r || !r.entered) return;
+      const preds = state.predictions[m.id] || {};
+      const pl = calcPoints(preds.luis, r, sd.stage);
+      const pb = calcPoints(preds.bibi, r, sd.stage);
+      if (pl === null && pb === null) return;
+      n++;
+      l += (pl || 0); b += (pb || 0);
+    });
+    if (n === 0) return; // skip rounds with nothing scored
+    cumL += l; cumB += b;
+    out.push({
+      stage: sd.stage, label: sd.label, matches: n,
+      luis: Math.round(l), bibi: Math.round(b),
+      cumL: Math.round(cumL), cumB: Math.round(cumB),
+      gap: Math.round(Math.abs(cumL - cumB)),
+      leader: cumL === cumB ? null : (cumL > cumB ? "Luis" : "Bibi"),
+      roundWinner: l === b ? null : (l > b ? "Luis" : "Bibi"),
+    });
+  });
+  return out;
+}
+
+// How often a player's signature (most-used) scoreline actually hit exactly.
+function signatureHitRate(playerKey, sig) {
+  if (!sig) return null;
+  const [sa, sb] = sig.line.split("-").map(x => parseInt(x, 10));
+  let used = 0, hit = 0;
+  allMatches().forEach(m => {
+    const r = state.results[m.id];
+    if (!r || !r.entered) return;
+    const p = (state.predictions[m.id] || {})[playerKey];
+    if (!p || !p.locked) return;
+    if (Number(p.scoreA) === sa && Number(p.scoreB) === sb) {
+      used++;
+      if (String(r.scoreA) === String(sa) && String(r.scoreB) === String(sb)) hit++;
+    }
+  });
+  return { used, hit, pct: used > 0 ? Math.round((hit/used)*100) : 0 };
+}
+
+// Build the narrative sentences from the round breakdown.
+function buildNarrative(rounds, st) {
+  const bits = [];
+  if (!rounds.length) return bits;
+  const first = rounds[0];
+  const last = rounds[rounds.length - 1];
+
+  // Act 1 — how the group stage set the table
+  if (first.leader) {
+    bits.push({
+      title: "How it started",
+      text: `After the group stage, <strong>${first.leader}</strong> led by <strong>${first.gap}</strong> points. ` +
+            `${first.leader === "Luis" ? "Bibi" : "Luis"} had ground to make up with the knockouts — and the multipliers — still to come.`
+    });
+  } else {
+    bits.push({ title:"How it started", text:`The group stage ended dead level. Everything to play for.` });
+  }
+
+  // Find the peak gap and who held it (the low point for the eventual chaser)
+  let peak = rounds[0];
+  rounds.forEach(r => { if (r.gap > peak.gap) peak = r; });
+  const finalLeader = last.leader;
+  const chaser = finalLeader === "Luis" ? "Bibi" : "Luis";
+
+  if (peak.gap > last.gap && peak.leader) {
+    bits.push({
+      title: "The low point",
+      text: `The gap peaked at <strong>${peak.gap}</strong> points after the <strong>${peak.label}</strong>, with ${peak.leader} in front. ` +
+            `That was the mountain to climb.`
+    });
+  }
+
+  // The turn — the round where the eventual chaser started taking rounds back,
+  // or (if no comeback) the biggest single-round swing.
+  let turnBeat = null;
+  const chaserKey = chaser === "Luis" ? "luis" : "bibi";
+  // Find the first round AFTER the peak where the chaser won the round
+  const peakIdx = rounds.indexOf(peak);
+  for (let i = peakIdx + 1; i < rounds.length; i++) {
+    if (rounds[i].roundWinner === chaser) {
+      const r = rounds[i];
+      const swing = Math.abs(r.luis - r.bibi);
+      turnBeat = {
+        title: "The turn",
+        text: `The fightback started in the <strong>${r.label}</strong>. ` +
+              `${chaser} took the round <strong>${Math.max(r.luis,r.bibi)}–${Math.min(r.luis,r.bibi)}</strong> — a ${swing}-point move — and the gap began to close.`
+      };
+      break;
+    }
+  }
+  if (!turnBeat) {
+    // No comeback: report the biggest single-round swing instead
+    let bestRound = null;
+    rounds.forEach(r => {
+      const swing = Math.abs(r.luis - r.bibi);
+      if (!bestRound || swing > Math.abs(bestRound.luis - bestRound.bibi)) bestRound = r;
+    });
+    if (bestRound && bestRound.roundWinner) {
+      const swing = Math.abs(bestRound.luis - bestRound.bibi);
+      turnBeat = {
+        title: "The decisive round",
+        text: `The <strong>${bestRound.label}</strong> produced the biggest swing of the tournament: ` +
+              `<strong>${bestRound.roundWinner}</strong> took it <strong>${Math.max(bestRound.luis,bestRound.bibi)}–${Math.min(bestRound.luis,bestRound.bibi)}</strong>, a ${swing}-point move.`
+      };
+    }
+  }
+  if (turnBeat) bits.push(turnBeat);
+
+  // How close it got — if the chaser genuinely narrowed things late
+  {
+    const narrowest = rounds.slice(peakIdx + 1).reduce((best, r) => (!best || r.gap < best.gap) ? r : best, null);
+    if (narrowest && narrowest.gap < peak.gap && narrowest !== last) {
+      bits.push({
+        title: "How close it got",
+        text: `By the end of the <strong>${narrowest.label}</strong>, the gap was down to <strong>${narrowest.gap}</strong> points — ` +
+              `the tightest it had been since the ${peak.label}.`
+      });
+    }
+  }
+
+  // The finish
+  if (last.leader) {
+    const closed = peak.gap - last.gap;
+    if (closed > 0 && peak.leader === last.leader) {
+      bits.push({
+        title: "The finish",
+        text: `${chaser} clawed <strong>${closed}</strong> points back from that peak, but ran out of matches. ` +
+              `<strong>${last.leader}</strong> held on to win by <strong>${last.gap}</strong>.`
+      });
+    } else {
+      bits.push({
+        title: "The finish",
+        text: `<strong>${last.leader}</strong> finished ahead by <strong>${last.gap}</strong> points.`
+      });
+    }
+  }
+  return bits;
+}
+
 // True once the Final has a result entered — unlocks the end-of-tournament report
 function tournamentComplete() {
   const f = (state.knockout.matches || []).find(m => m.round === "Final");
@@ -2683,6 +2841,71 @@ function renderReport() {
     <div class="section-title">The Race 📈</div>
     ${renderCumulativeLead()}
 
+    <!-- The story -->
+    <div class="section-title">The Story 📖</div>
+    ${(() => {
+      const rounds = roundBreakdown();
+      const narr = buildNarrative(rounds, st);
+      if (!rounds.length) return "";
+
+      const narrByIndex = {};
+      // Place narrative beats between chapters: intro after round 0, others woven in
+      const beat = (b) => `
+        <div style="background:rgba(243,156,18,0.07);border-left:3px solid rgba(243,156,18,0.5);border-radius:0 10px 10px 0;padding:12px 14px;margin:10px 0">
+          <div style="font-size:11px;font-weight:800;color:#f9c22e;letter-spacing:0.6px;text-transform:uppercase;margin-bottom:5px">${esc(b.title)}</div>
+          <div style="font-size:13px;color:rgba(255,255,255,0.78);line-height:1.65">${b.text}</div>
+        </div>`;
+
+      const chapter = (r, idx) => {
+        const lWin = r.luis > r.bibi, bWin = r.bibi > r.luis;
+        const leadColor = r.leader === "Luis" ? "#5dade2" : (r.leader === "Bibi" ? "#bb8fce" : "rgba(255,255,255,0.5)");
+        return `
+          <div class="standings-card" style="margin-bottom:8px">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:9px">
+              <span style="font-size:13px;font-weight:800">${esc(r.label)}</span>
+              <span style="font-size:10px;color:rgba(255,255,255,0.35)">${r.matches} match${r.matches===1?'':'es'}</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:9px">
+              <div style="flex:1;text-align:center;padding:8px 4px;border-radius:8px;background:${lWin?'rgba(93,173,226,0.15)':'rgba(255,255,255,0.04)'}">
+                <div style="font-size:10px;color:#5dade2;font-weight:700">LUIS</div>
+                <div style="font-size:19px;font-weight:800;color:${lWin?'#5dade2':'#fff'}">+${r.luis}</div>
+              </div>
+              <div style="flex:1;text-align:center;padding:8px 4px;border-radius:8px;background:${bWin?'rgba(155,89,182,0.15)':'rgba(255,255,255,0.04)'}">
+                <div style="font-size:10px;color:#bb8fce;font-weight:700">BIBI</div>
+                <div style="font-size:19px;font-weight:800;color:${bWin?'#bb8fce':'#fff'}">+${r.bibi}</div>
+              </div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding-top:8px;border-top:1px solid rgba(255,255,255,0.07)">
+              <span style="color:rgba(255,255,255,0.45)">Running: ${r.cumL} – ${r.cumB}</span>
+              <span style="font-weight:700;color:${leadColor}">${r.leader ? `${r.leader} +${r.gap}` : "Level"}</span>
+            </div>
+          </div>`;
+      };
+
+      // Weave narrative beats between the round chapters.
+      // Intro first, closing beat last, the rest spread through the middle.
+      let html = "";
+      const beats = [...narr];
+      const intro = beats.shift();
+      const finish = (beats.length && beats[beats.length-1].title === "The finish") ? beats.pop() : null;
+      if (intro) html += beat(intro);
+
+      // Positions to drop remaining beats: spread across chapters after the first
+      const slots = [];
+      if (beats.length && rounds.length > 1) {
+        const step = Math.max(1, Math.floor((rounds.length - 1) / (beats.length + 1)));
+        for (let i = 0; i < beats.length; i++) slots.push(Math.min(rounds.length - 2, step * (i + 1)));
+      }
+      rounds.forEach((r, i) => {
+        html += chapter(r, i);
+        while (beats.length && slots.length && slots[0] === i) { slots.shift(); html += beat(beats.shift()); }
+      });
+      // any leftovers, then the closing beat
+      beats.forEach(b => { html += beat(b); });
+      if (finish) html += beat(finish);
+      return html;
+    })()}
+
     <!-- Head to head -->
     <div class="section-title">Head-to-Head 🥊</div>
     <div class="standings-card">
@@ -2719,25 +2942,31 @@ function renderReport() {
 
     <!-- Fingerprint -->
     <div class="section-title">Signature 🖋️</div>
-    <div class="standings-card">
-      <div style="display:flex;gap:12px">
-        <div style="flex:1;text-align:center;padding:10px;background:rgba(93,173,226,0.08);border-radius:10px">
-          <div style="font-size:11px;color:#5dade2;font-weight:700;margin-bottom:4px">LUIS</div>
-          <div style="font-size:22px;font-weight:800">${sigL?esc(sigL.line):"—"}</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:2px">${sigL?`picked ${sigL.n}×`:""}</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:6px">${L.fp.totalGoalsPredicted} goals predicted</div>
-        </div>
-        <div style="flex:1;text-align:center;padding:10px;background:rgba(155,89,182,0.08);border-radius:10px">
-          <div style="font-size:11px;color:#bb8fce;font-weight:700;margin-bottom:4px">BIBI</div>
-          <div style="font-size:22px;font-weight:800">${sigB?esc(sigB.line):"—"}</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:2px">${sigB?`picked ${sigB.n}×`:""}</div>
-          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:6px">${B.fp.totalGoalsPredicted} goals predicted</div>
-        </div>
-      </div>
-      <div style="font-size:10px;color:rgba(255,255,255,0.32);margin-top:10px;text-align:center;line-height:1.5">
-        Your most-predicted scoreline — the fingerprint of how each of you reads a game.
-      </div>
-    </div>
+    ${(() => {
+      const hrL = signatureHitRate("luis", sigL), hrB = signatureHitRate("bibi", sigB);
+      const card = (name, color, rgb, sig, hr, goals) => `
+        <div style="flex:1;text-align:center;padding:12px 8px;background:rgba(${rgb},0.08);border-radius:10px">
+          <div style="font-size:11px;color:${color};font-weight:700;margin-bottom:4px">${name}</div>
+          <div style="font-size:24px;font-weight:800">${sig?esc(sig.line):"—"}</div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.4);margin-top:2px">${sig?`picked ${sig.n}×`:""}</div>
+          ${hr ? `
+            <div style="margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,255,255,0.08)">
+              <div style="font-size:20px;font-weight:800;color:${hr.pct>=30?'#2ecc71':(hr.pct>=15?'#f9c22e':'#e74c3c')}">${hr.pct}%</div>
+              <div style="font-size:10px;color:rgba(255,255,255,0.45);margin-top:1px">hit ${hr.hit} of ${hr.used}</div>
+            </div>` : ""}
+          <div style="font-size:10px;color:rgba(255,255,255,0.35);margin-top:8px">${goals} goals predicted</div>
+        </div>`;
+      return `
+        <div class="standings-card">
+          <div style="display:flex;gap:10px">
+            ${card("LUIS","#5dade2","93,173,226",sigL,hrL,L.fp.totalGoalsPredicted)}
+            ${card("BIBI","#bb8fce","155,89,182",sigB,hrB,B.fp.totalGoalsPredicted)}
+          </div>
+          <div style="font-size:10px;color:rgba(255,255,255,0.32);margin-top:11px;text-align:center;line-height:1.55">
+            Your go-to scoreline, and how often it actually landed. The fingerprint of how each of you reads a game.
+          </div>
+        </div>`;
+    })()}
 
     <div style="height:20px"></div>
   `;
