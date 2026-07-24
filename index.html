@@ -2986,16 +2986,16 @@ function renderStickers() {
   allTeams.forEach(t => {
     const s = state.stickers[t] || {};
     for (let n = 1; n <= PER_TEAM; n++) {
-      if (s[n] === "have") totalHave++;
-      else if (s[n] === "dup") totalDup++;
+      if (s[n] === "have" || s[n] === "dup") totalHave++;
+      if (s[n] === "dup") totalDup++;
     }
   });
   SPECIAL_SETS.forEach(sp => {
     total += sp.count;
     const s = state.stickers[sp.key] || {};
     for (let n = 1; n <= sp.count; n++) {
-      if (s[n] === "have") totalHave++;
-      else if (s[n] === "dup") totalDup++;
+      if (s[n] === "have" || s[n] === "dup") totalHave++;
+      if (s[n] === "dup") totalDup++;
     }
   });
   const pctComplete = Math.round((totalHave / total) * 100);
@@ -3004,7 +3004,7 @@ function renderStickers() {
     size = size || PER_TEAM;
     const s = state.stickers[key] || {};
     let have = 0, dup = 0;
-    for (let n = 1; n <= size; n++) { if (s[n]==="have") have++; else if (s[n]==="dup") dup++; }
+    for (let n = 1; n <= size; n++) { if (s[n]==="have" || s[n]==="dup") have++; if (s[n]==="dup") dup++; }
     return { have, dup, need: size - have };
   };
   const teamMatchesFilter = (t) => {
